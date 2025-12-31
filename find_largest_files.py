@@ -82,6 +82,14 @@ Examples:
         action="store_true",
         help="Only scan the specified directory, not subdirectories (default: recursive)",
     )
+    parser.add_argument(
+        "-o",
+        "--output",
+        type=str,
+        default=None,
+        metavar="FILE",
+        help="Save results to a file instead of printing to stdout",
+    )
     return parser.parse_args(argv)
 
 
@@ -125,10 +133,26 @@ def print_error_report(
 
 def print_file_sizes(
     file_sizes: List[Tuple[int, Path]], args: argparse.Namespace
-) -> None:
+) -> Tuple[List[Tuple[int, Path]], List[Path]]:
     unicode_errors: List[Tuple[int, Path]] = []
     error_paths: List[Path] = []
-    print(f"File Size\tPath")
+    
+    # Determine output file handle
+    output_file = None
+    if args.output:
+        try:
+            output_file = open(args.output, "w", encoding="utf-8")
+        except IOError as e:
+            print(f"Error: Could not open output file '{args.output}': {e}")
+            return unicode_errors, error_paths
+    
+    def write_line(line: str) -> None:
+        if output_file:
+            output_file.write(line + "\n")
+        else:
+            print(line)
+    
+    write_line(f"File Size\tPath")
     for size, path in file_sizes:
         # Handle paths with invalid Unicode characters
         try:
@@ -139,9 +163,9 @@ def print_file_sizes(
         try:
             if args.human_readable:
                 size_str = format_size(size)
-                print(f"{size_str:>10}\t{path_str}")
+                write_line(f"{size_str:>10}\t{path_str}")
             else:
-                print(f"{size}\t{path_str}")
+                write_line(f"{size}\t{path_str}")
         except UnicodeEncodeError:
             # Track files with Unicode errors
             unicode_errors.append((size, path))
@@ -150,11 +174,15 @@ def print_file_sizes(
             path_safe = path_bytes.decode("utf-8", errors="replace")
             if args.human_readable:
                 size_str = format_size(size)
-                print(f"{size_str:>10}\t{path_safe}")
+                write_line(f"{size_str:>10}\t{path_safe}")
             else:
-                print(f"{size}\t{path_safe}")
-    if error_paths or unicode_errors:
-        print_error_report(unicode_errors, error_paths, args)
+                write_line(f"{size}\t{path_safe}")
+    
+    if output_file:
+        output_file.close()
+        print(f"Results saved to '{args.output}'")
+    
+    return unicode_errors, error_paths
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     """Script entry point."""
@@ -177,8 +205,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"No files found in '{directory}'")
         return 0
 
-    unicode_errors: List[Tuple[int, Path]] = []
-    print_file_sizes(file_sizes, args)
+    unicode_errors, error_paths = print_file_sizes(file_sizes, args)
+    
+    if error_paths or unicode_errors:
+        print_error_report(unicode_errors, error_paths, args)
+    
     return 0
 
 

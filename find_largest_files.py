@@ -8,10 +8,13 @@ from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
 
 
-def find_largest_files(directory: Path, recursive: bool = True) -> List[Tuple[int, Path]]:
-    """Return ``(size, path)`` tuples for files under ``directory`` sorted by size."""
+def find_largest_files(
+    directory: Path, recursive: bool = True
+) -> Tuple[List[Tuple[int, Path]], List[Path]]:
+    """Return ``(size, path)`` tuples for files under ``directory`` sorted by size, and list of error paths."""
     file_sizes: List[Tuple[int, Path]] = []
-    pattern = directory.rglob('*') if recursive else directory.glob('*')
+    error_paths: List[Path] = []
+    pattern = directory.rglob("*") if recursive else directory.glob("*")
     file_count = 0
     for path in pattern:
         if path.is_file():
@@ -22,17 +25,18 @@ def find_largest_files(directory: Path, recursive: bool = True) -> List[Tuple[in
                 if file_count % 1000 == 0:
                     print(f"Scanned {file_count} files...", flush=True)
             except OSError:
-                # Skip files we cannot access
+                # Track files we cannot access
+                error_paths.append(path)
                 continue
     if file_count > 0:
         print(f"Scanned {file_count} files total. Sorting...", flush=True)
     file_sizes.sort(key=lambda pair: pair[0], reverse=True)
-    return file_sizes
+    return file_sizes, error_paths
 
 
 def format_size(size: int) -> str:
     """Format file size in human-readable format."""
-    for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+    for unit in ["B", "KB", "MB", "GB", "TB"]:
         if size < 1024.0:
             return f"{size:.1f}{unit}"
         size /= 1024.0
@@ -51,25 +55,106 @@ Examples:
   %(prog)s --human-readable   # Show sizes in human-readable format
   %(prog)s --no-recursive     # Scan only the directory itself, not subdirectories
         """,
-        formatter_class=argparse.RawDescriptionHelpFormatter
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
-        "directory", nargs="?", default=".", help="Directory to scan (default: current directory)"
+        "directory",
+        nargs="?",
+        default=".",
+        help="Directory to scan (default: current directory)",
     )
     parser.add_argument(
-        "-n", "--num", type=int, default=None, metavar="N",
-        help="Show only the top N largest files"
+        "-n",
+        "--num",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Show only the top N largest files",
     )
     parser.add_argument(
-        "-H", "--human-readable", action="store_true",
-        help="Display file sizes in human-readable format (KB, MB, GB, etc.)"
+        "-H",
+        "--human-readable",
+        action="store_true",
+        help="Display file sizes in human-readable format (KB, MB, GB, etc.)",
     )
     parser.add_argument(
-        "--no-recursive", action="store_true",
-        help="Only scan the specified directory, not subdirectories (default: recursive)"
+        "--no-recursive",
+        action="store_true",
+        help="Only scan the specified directory, not subdirectories (default: recursive)",
     )
     return parser.parse_args(argv)
 
+
+def print_error_report(
+    unicode_errors: List[Tuple[int, Path]],
+    error_paths: List[Path],
+    args: argparse.Namespace,
+) -> None:
+    # Print error report
+    print("\n" + "=" * 60)
+    print("ERROR REPORT")
+    print("=" * 60)
+
+    if error_paths:
+        print(
+            f"\n{len(error_paths)} file(s) could not be accessed (permission denied or other OS error):"
+        )
+        for path in error_paths:
+            try:
+                print(f"  - {path}")
+            except UnicodeEncodeError:
+                path_bytes = str(path).encode("utf-8", errors="surrogateescape")
+                path_safe = path_bytes.decode("utf-8", errors="replace")
+                print(f"  - {path_safe}")
+
+    if unicode_errors:
+        print(
+            f"\n{len(unicode_errors)} file(s) with invalid Unicode characters in filename:"
+        )
+        for size, path in unicode_errors:
+            path_bytes = str(path).encode("utf-8", errors="surrogateescape")
+            path_safe = path_bytes.decode("utf-8", errors="replace")
+            if args.human_readable:
+                size_str = format_size(size)
+                print(f"  - {size_str:>10}\t{path_safe}")
+            else:
+                print(f"  - {size}\t{path_safe}")
+            # Also show the raw representation for debugging
+            print(f"    Raw: {repr(str(path))}")
+
+
+def print_file_sizes(
+    file_sizes: List[Tuple[int, Path]], args: argparse.Namespace
+) -> None:
+    unicode_errors: List[Tuple[int, Path]] = []
+    error_paths: List[Path] = []
+    print(f"File Size\tPath")
+    for size, path in file_sizes:
+        # Handle paths with invalid Unicode characters
+        try:
+            path_str = str(path)
+        except Exception:
+            path_str = repr(path)
+
+        try:
+            if args.human_readable:
+                size_str = format_size(size)
+                print(f"{size_str:>10}\t{path_str}")
+            else:
+                print(f"{size}\t{path_str}")
+        except UnicodeEncodeError:
+            # Track files with Unicode errors
+            unicode_errors.append((size, path))
+            # Use error handling to display problematic filenames
+            path_bytes = str(path).encode("utf-8", errors="surrogateescape")
+            path_safe = path_bytes.decode("utf-8", errors="replace")
+            if args.human_readable:
+                size_str = format_size(size)
+                print(f"{size_str:>10}\t{path_safe}")
+            else:
+                print(f"{size}\t{path_safe}")
+    if error_paths or unicode_errors:
+        print_error_report(unicode_errors, error_paths, args)
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     """Script entry point."""
@@ -80,38 +165,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"Error: '{directory}' is not a directory")
         return 1
 
-    file_sizes = find_largest_files(directory, recursive=not args.no_recursive)
-    
+    file_sizes, error_paths = find_largest_files(
+        directory, recursive=not args.no_recursive
+    )
+
     # Limit results if requested
     if args.num is not None:
-        file_sizes = file_sizes[:args.num]
-    
+        file_sizes = file_sizes[: args.num]
+
     if not file_sizes:
         print(f"No files found in '{directory}'")
         return 0
-    print(f"File Size\tPath")
-    for size, path in file_sizes:
-        # Handle paths with invalid Unicode characters
-        try:
-            path_str = str(path)
-        except Exception:
-            path_str = repr(path)
-        
-        try:
-            if args.human_readable:
-                size_str = format_size(size)
-                print(f"{size_str:>10}\t{path_str}")
-            else:
-                print(f"{size}\t{path_str}")
-        except UnicodeEncodeError:
-            # Use error handling to display problematic filenames
-            path_bytes = str(path).encode('utf-8', errors='surrogateescape')
-            path_safe = path_bytes.decode('utf-8', errors='replace')
-            if args.human_readable:
-                size_str = format_size(size)
-                print(f"{size_str:>10}\t{path_safe}")
-            else:
-                print(f"{size}\t{path_safe}")
+
+    unicode_errors: List[Tuple[int, Path]] = []
+    print_file_sizes(file_sizes, args)
     return 0
 
 

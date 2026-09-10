@@ -7,23 +7,12 @@ import shutil
 import subprocess
 import sys
 
-
-def human_size(num_bytes):
-    units = ["B", "KiB", "MiB", "GiB", "TiB"]
-    size = float(num_bytes)
-
-    for unit in units:
-        if size < 1024 or unit == units[-1]:
-            if unit == "B":
-                return f"{int(size)} {unit}"
-            return f"{size:.1f} {unit}"
-        size /= 1024
-
-
-def display_path(path):
-    # Filenames that aren't valid UTF-8 come back from os.walk with
-    # surrogate escapes, which can't be printed as-is.
-    return path.encode("utf-8", "surrogateescape").decode("utf-8", "replace")
+from nas_common import (
+    MAIN_DIRECTORIES,
+    display_path,
+    existing_directories,
+    human_size,
+)
 
 
 def find_tool(name):
@@ -164,14 +153,6 @@ def defrag_files(results, filefrag):
     if failed:
         print(f"\n{failed} file(s) failed to defragment.", file=sys.stderr)
 
-MAIN_DIRECTORIES = [
-    "/media/jasonz001/Drive1/Plex1/Disney",
-    "/media/jasonz001/Drive1/Plex1/Movies",
-    "/media/jasonz001/Drive2/Plex2/Anime",
-    "/media/jasonz001/Drive2/Plex2/Anime_Movies",
-    "/media/jasonz001/Drive2/Plex2/TV_Shows",
-]
-
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
@@ -209,16 +190,9 @@ def main(argv=None):
 
     args = parser.parse_args(argv)
 
-    directories = [
-        os.path.abspath(d) for d in (args.directories or MAIN_DIRECTORIES)
-    ]
-
-    missing = [d for d in directories if not os.path.isdir(d)]
-
-    for directory in missing:
-        print(f"Warning: skipping, not a directory: {directory}", file=sys.stderr)
-
-    directories = [d for d in directories if d not in missing]
+    directories = existing_directories(
+        [os.path.abspath(d) for d in (args.directories or MAIN_DIRECTORIES)]
+    )
 
     if not directories:
         print("Error: no directories to scan.", file=sys.stderr)

@@ -1,19 +1,12 @@
 import os
 import shutil
-import tempfile
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional
+from typing import Dict, List, Optional
 
 import pytest
 
 import defrag
-
-# /tmp is tmpfs on the NAS, and filefrag/e4defrag need a real filesystem
-# such as ext4, so tests work in the repo's (gitignored) tmp/ directory.
-REPO_TMP = Path(__file__).resolve().parent.parent / "tmp"
-
-# A filename that isn't valid UTF-8, like the ones found in the Anime folder.
-BAD_NAME = os.fsdecode(b"bad\xda.mkv")
+from tests.helpers import BAD_NAME, make_file
 
 
 def real_tool(name: str) -> Optional[str]:
@@ -26,18 +19,6 @@ E4DEFRAG = real_tool("e4defrag")
 
 needs_filefrag = pytest.mark.skipif(FILEFRAG is None, reason="filefrag not installed")
 needs_e4defrag = pytest.mark.skipif(E4DEFRAG is None, reason="e4defrag not installed")
-
-
-@pytest.fixture
-def repo_tmp() -> Iterator[Path]:
-    REPO_TMP.mkdir(exist_ok=True)
-    path = Path(tempfile.mkdtemp(prefix="test_defrag_", dir=REPO_TMP))
-    yield path
-    shutil.rmtree(path)
-    try:
-        REPO_TMP.rmdir()  # only succeeds once nothing else is in it
-    except OSError:
-        pass
 
 
 @pytest.fixture
@@ -60,14 +41,6 @@ def write_script(path: Path, body: str) -> str:
     return str(path)
 
 
-def make_file(path: Path, size: int = 1024) -> Path:
-    # Sparse, so multi-GB files cost no disk space.
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "wb") as f:
-        f.truncate(size)
-    return path
-
-
 def item(path: Path, extents: int, size: int = 1024**3) -> dict:
     return {
         "path": str(path),
@@ -87,34 +60,6 @@ def listed_files(output: str) -> List[str]:
             break
         names.append(line.rsplit("/", 1)[-1])
     return names
-
-
-# human_size / display_path
-
-
-@pytest.mark.parametrize(
-    "num_bytes, expected",
-    [
-        (0, "0 B"),
-        (1023, "1023 B"),
-        (1024, "1.0 KiB"),
-        (1536, "1.5 KiB"),
-        (5 * 1024**3, "5.0 GiB"),
-        (2048 * 1024**4, "2048.0 TiB"),
-    ],
-)
-def test_human_size(num_bytes: int, expected: str) -> None:
-    assert defrag.human_size(num_bytes) == expected
-
-
-def test_display_path_leaves_utf8_paths_alone() -> None:
-    assert defrag.display_path("/media/Anime/進撃の巨人.mkv") == "/media/Anime/進撃の巨人.mkv"
-
-
-def test_display_path_replaces_invalid_bytes() -> None:
-    shown = defrag.display_path("/media/Anime/" + BAD_NAME)
-    assert shown == "/media/Anime/bad�.mkv"
-    shown.encode("utf-8")  # must be printable
 
 
 # find_tool

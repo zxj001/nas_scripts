@@ -173,7 +173,7 @@ MAIN_DIRECTORIES = [
 ]
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(
         description="Find the most fragmented files using filefrag."
     )
@@ -207,7 +207,7 @@ def main():
         help="Defragment the listed top -n files with e4defrag",
     )
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     directories = [
         os.path.abspath(d) for d in (args.directories or MAIN_DIRECTORIES)

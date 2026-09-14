@@ -151,6 +151,16 @@ rsync -ahPn --preallocate --no-delay-updates --size-only --delete --info=progres
 rsync -ahPn --preallocate --no-delay-updates --size-only --delete --info=progress2 -e "ssh -i ~/.ssh/nas_sync -p 2222" "remote@192.168.1.201:/mnt/Media/family/videos/TV Shows/" "/media/jasonz001/Drive2/Plex2/TV_Shows/"
 ```
 
+### Other folders
+
+```
+rsync -ahPn --preallocate --no-delay-updates --size-only --delete --info=progress2 -e "ssh -i ~/.ssh/nas_sync -p 2222" "remote@192.168.1.201:/mnt/Media/family/music/" "/media/jasonz001/Drive2/Music/"
+
+rsync -ahPn --preallocate --no-delay-updates --size-only --delete --info=progress2 -e "ssh -i ~/.ssh/nas_sync -p 2222" "remote@192.168.1.201:/mnt/Media/family/backups/" "/media/jasonz001/Drive2/Backups/"
+
+rsync -ahPn --preallocate --no-delay-updates --size-only --delete --info=progress2 -e "ssh -i ~/.ssh/nas_sync -p 2222" "remote@192.168.1.201:/mnt/Media/family/software/" "/media/jasonz001/Drive2/Software/"
+```
+
 | Flag                 | Purpose                                                               |
 | -------------------- | --------------------------------------------------------------------- |
 | `-a`                 | Archive mode: recurse and preserve permissions, times, symlinks       |

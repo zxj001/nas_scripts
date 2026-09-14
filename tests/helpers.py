@@ -13,3 +13,11 @@ def make_file(path: Path, size: int = 1024) -> Path:
     with open(path, "wb") as f:
         f.truncate(size)
     return path
+
+
+def write_script(path: Path, body: str) -> str:
+    """Write an executable shell script, for faking the tools the scripts run."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("#!/bin/sh\n" + body)
+    path.chmod(0o755)
+    return str(path)

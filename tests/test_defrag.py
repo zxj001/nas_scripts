@@ -6,7 +6,7 @@ from typing import Dict, List, Optional
 import pytest
 
 import defrag
-from tests.helpers import BAD_NAME, make_file
+from tests.helpers import BAD_NAME, make_file, write_script
 
 
 def real_tool(name: str) -> Optional[str]:
@@ -32,13 +32,6 @@ def fake_extents(monkeypatch: pytest.MonkeyPatch) -> Dict[str, int]:
         lambda filefrag, filename: extents.get(os.path.basename(filename)),
     )
     return extents
-
-
-def write_script(path: Path, body: str) -> str:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("#!/bin/sh\n" + body)
-    path.chmod(0o755)
-    return str(path)
 
 
 def item(path: Path, extents: int, size: int = 1024**3) -> dict:

@@ -1,215 +1,219 @@
 #!/usr/bin/env python3
-"""Utility to list files in a directory sorted by size."""
+"""List the largest files under the Plex folders (or any directories), biggest first."""
 
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
-from typing import List, Optional, Sequence, Tuple
+import os
+import stat
+import sys
+from typing import List, NamedTuple, Optional, Sequence, Tuple
+
+from nas_common import (
+    MAIN_DIRECTORIES,
+    display_path,
+    existing_directories,
+    human_size,
+)
+
+# Print a progress line every this many files.
+PROGRESS_EVERY = 1000
 
 
-def find_largest_files(
-    directory: Path, recursive: bool = True
-) -> Tuple[List[Tuple[int, Path]], List[Path]]:
-    """Return ``(size, path)`` tuples for files under ``directory`` sorted by size, and list of error paths."""
-    file_sizes: List[Tuple[int, Path]] = []
-    error_paths: List[Path] = []
-    pattern = directory.rglob("*") if recursive else directory.glob("*")
-    file_count = 0
-    for path in pattern:
-        if path.is_file():
+class FileEntry(NamedTuple):
+    size: int
+    path: str
+
+
+def scan(
+    directories: Sequence[str], recursive: bool = True
+) -> Tuple[List[FileEntry], List[str]]:
+    """Return every file under ``directories``, and the paths that couldn't be read."""
+    files: List[FileEntry] = []
+    errors: List[str] = []
+
+    for directory in directories:
+        print(f"Scanning: {directory}", file=sys.stderr)
+        files.extend(scan_directory(directory, recursive, errors))
+
+    return files, errors
+
+
+def scan_directory(
+    directory: str, recursive: bool, errors: List[str]
+) -> List[FileEntry]:
+    """Return the regular files under ``directory``, adding unreadable paths to ``errors``.
+
+    Symlinks are skipped so the same file isn't counted twice.
+    """
+    files: List[FileEntry] = []
+
+    for root, subdirs, names in os.walk(
+        directory, onerror=lambda error: errors.append(error.filename)
+    ):
+        if not recursive:
+            subdirs.clear()
+
+        for name in names:
+            path = os.path.join(root, name)
+
             try:
-                file_sizes.append((path.stat().st_size, path))
-                file_count += 1
-                # Print progress every 1000 files
-                if file_count % 1000 == 0:
-                    print(f"Scanned {file_count} files...", flush=True)
+                info = os.lstat(path)
             except OSError:
-                # Track files we cannot access
-                error_paths.append(path)
+                errors.append(path)
                 continue
-    if file_count > 0:
-        print(f"Scanned {file_count} files total. Sorting...", flush=True)
-    file_sizes.sort(key=lambda pair: pair[0], reverse=True)
-    return file_sizes, error_paths
+
+            if not stat.S_ISREG(info.st_mode):
+                continue
+
+            files.append(FileEntry(info.st_size, path))
+
+            # Progress goes to stderr so the list itself can be piped.
+            if len(files) % PROGRESS_EVERY == 0:
+                print(
+                    f"\rScanned {len(files):,} files...",
+                    end="",
+                    file=sys.stderr,
+                    flush=True,
+                )
+
+    if len(files) >= PROGRESS_EVERY:
+        print(file=sys.stderr)
+
+    return files
 
 
-def format_size(size: int) -> str:
-    """Format file size in human-readable format."""
-    for unit in ["B", "KB", "MB", "GB", "TB"]:
-        if size < 1024.0:
-            return f"{size:.1f}{unit}"
-        size /= 1024.0
-    return f"{size:.1f}PB"
+def largest(
+    files: Sequence[FileEntry], top: int = 0, min_size: int = 0
+) -> List[FileEntry]:
+    """Files of at least ``min_size`` bytes, biggest first. A ``top`` of 0 keeps all."""
+    result = sorted(
+        (entry for entry in files if entry.size >= min_size),
+        key=lambda entry: (-entry.size, entry.path),
+    )
+    return result[:top] if top > 0 else result
+
+
+def format_table(files: Sequence[FileEntry], exact_bytes: bool = False) -> List[str]:
+    """Lines of a SIZE / FILE table for ``files``."""
+    width = 15 if exact_bytes else 10
+    lines = [f"{'SIZE':>{width}}  FILE", f"{'-' * width}  {'-' * 40}"]
+
+    for entry in files:
+        size = str(entry.size) if exact_bytes else human_size(entry.size)
+        lines.append(f"{size:>{width}}  {display_path(entry.path)}")
+
+    return lines
+
+
+def print_problems(listed: Sequence[FileEntry], errors: Sequence[str]) -> None:
+    """Report unreadable paths, and listed files whose names aren't valid UTF-8."""
+    if errors:
+        print(f"\n{len(errors)} path(s) could not be read:", file=sys.stderr)
+        for path in errors:
+            print(f"  {display_path(path)}", file=sys.stderr)
+
+    bad_names = [entry.path for entry in listed if display_path(entry.path) != entry.path]
+
+    if bad_names:
+        print(
+            f"\n{len(bad_names)} listed file(s) have names that aren't valid UTF-8:",
+            file=sys.stderr,
+        )
+        for path in bad_names:
+            # The raw bytes show exactly what needs renaming.
+            print(
+                f"  {display_path(path)}\n    raw: {os.fsencode(path)!r}",
+                file=sys.stderr,
+            )
 
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
-        description="List all files in a directory in descending size order.",
+        description="List the largest files, biggest first.",
         epilog="""
 Examples:
-  %(prog)s                    # List all files in current directory (recursive)
-  %(prog)s /path/to/dir       # List all files in specified directory (recursive)
-  %(prog)s -n 10              # Show only top 10 largest files
-  %(prog)s --human-readable   # Show sizes in human-readable format
-  %(prog)s --no-recursive     # Scan only the directory itself, not subdirectories
+  %(prog)s                      Top 20 files across the Plex folders
+  %(prog)s ~/Downloads -n 50    Top 50 files in ~/Downloads
+  %(prog)s --min-size 10        Only files of 10 GB or more
+  %(prog)s -n 0 -o files.txt    Save every file to files.txt
         """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
-        "directory",
-        nargs="?",
-        default=".",
-        help="Directory to scan (default: current directory)",
+        "directories",
+        nargs="*",
+        metavar="directory",
+        help="Directories to scan (default: the Plex folders)",
     )
     parser.add_argument(
         "-n",
-        "--num",
+        "--top",
         type=int,
-        default=None,
+        default=20,
         metavar="N",
-        help="Show only the top N largest files",
+        help="Number of files to show, 0 for all (default: 20)",
     )
     parser.add_argument(
-        "-H",
-        "--human-readable",
+        "--min-size",
+        type=float,
+        default=0,
+        metavar="GB",
+        help="Only show files at least this many GB",
+    )
+    parser.add_argument(
+        "--bytes",
         action="store_true",
-        help="Display file sizes in human-readable format (KB, MB, GB, etc.)",
+        help="Show exact sizes in bytes instead of KiB/MiB/GiB",
     )
     parser.add_argument(
         "--no-recursive",
         action="store_true",
-        help="Only scan the specified directory, not subdirectories (default: recursive)",
+        help="Only scan the directories themselves, not subdirectories",
     )
     parser.add_argument(
         "-o",
         "--output",
-        type=str,
-        default=None,
         metavar="FILE",
-        help="Save results to a file instead of printing to stdout",
+        help="Save the list to FILE instead of printing it",
     )
     return parser.parse_args(argv)
 
 
-def print_error_report(
-    unicode_errors: List[Tuple[int, Path]],
-    error_paths: List[Path],
-    args: argparse.Namespace,
-) -> None:
-    # Print error report
-    print("\n" + "=" * 60)
-    print("ERROR REPORT")
-    print("=" * 60)
-
-    if error_paths:
-        print(
-            f"\n{len(error_paths)} file(s) could not be accessed (permission denied or other OS error):"
-        )
-        for path in error_paths:
-            try:
-                print(f"  - {path}")
-            except UnicodeEncodeError:
-                path_bytes = str(path).encode("utf-8", errors="surrogateescape")
-                path_safe = path_bytes.decode("utf-8", errors="replace")
-                print(f"  - {path_safe}")
-
-    if unicode_errors:
-        print(
-            f"\n{len(unicode_errors)} file(s) with invalid Unicode characters in filename:"
-        )
-        for size, path in unicode_errors:
-            path_bytes = str(path).encode("utf-8", errors="surrogateescape")
-            path_safe = path_bytes.decode("utf-8", errors="replace")
-            if args.human_readable:
-                size_str = format_size(size)
-                print(f"  - {size_str:>10}\t{path_safe}")
-            else:
-                print(f"  - {size}\t{path_safe}")
-            # Also show the raw representation for debugging
-            print(f"    Raw: {repr(str(path))}")
-
-
-def print_file_sizes(
-    file_sizes: List[Tuple[int, Path]], args: argparse.Namespace
-) -> Tuple[List[Tuple[int, Path]], List[Path]]:
-    unicode_errors: List[Tuple[int, Path]] = []
-    error_paths: List[Path] = []
-    
-    # Determine output file handle
-    output_file = None
-    if args.output:
-        try:
-            output_file = open(args.output, "w", encoding="utf-8")
-        except IOError as e:
-            print(f"Error: Could not open output file '{args.output}': {e}")
-            return unicode_errors, error_paths
-    
-    def write_line(line: str) -> None:
-        if output_file:
-            output_file.write(line + "\n")
-        else:
-            print(line)
-    
-    write_line(f"File Size\tPath")
-    for size, path in file_sizes:
-        # Handle paths with invalid Unicode characters
-        try:
-            path_str = str(path)
-        except Exception:
-            path_str = repr(path)
-
-        try:
-            if args.human_readable:
-                size_str = format_size(size)
-                write_line(f"{size_str:>10}\t{path_str}")
-            else:
-                write_line(f"{size}\t{path_str}")
-        except UnicodeEncodeError:
-            # Track files with Unicode errors
-            unicode_errors.append((size, path))
-            # Use error handling to display problematic filenames
-            path_bytes = str(path).encode("utf-8", errors="surrogateescape")
-            path_safe = path_bytes.decode("utf-8", errors="replace")
-            if args.human_readable:
-                size_str = format_size(size)
-                write_line(f"{size_str:>10}\t{path_safe}")
-            else:
-                write_line(f"{size}\t{path_safe}")
-    
-    if output_file:
-        output_file.close()
-        print(f"Results saved to '{args.output}'")
-    
-    return unicode_errors, error_paths
-
 def main(argv: Optional[Sequence[str]] = None) -> int:
     """Script entry point."""
     args = parse_args(argv)
-    directory = Path(args.directory)
 
-    if not directory.is_dir():
-        print(f"Error: '{directory}' is not a directory")
+    directories = existing_directories(args.directories or MAIN_DIRECTORIES)
+
+    if not directories:
+        print("Error: no directories to scan.", file=sys.stderr)
         return 1
 
-    file_sizes, error_paths = find_largest_files(
-        directory, recursive=not args.no_recursive
-    )
+    files, errors = scan(directories, recursive=not args.no_recursive)
+    listed = largest(files, top=args.top, min_size=int(args.min_size * 1024**3))
 
-    # Limit results if requested
-    if args.num is not None:
-        file_sizes = file_sizes[: args.num]
+    if not listed:
+        print("No files found.")
+    else:
+        table = "\n".join(format_table(listed, exact_bytes=args.bytes))
 
-    if not file_sizes:
-        print(f"No files found in '{directory}'")
-        return 0
+        if args.output:
+            try:
+                with open(args.output, "w", encoding="utf-8") as output:
+                    output.write(table + "\n")
+            except OSError as error:
+                print(
+                    f"Error: could not write {args.output}: {error.strerror}",
+                    file=sys.stderr,
+                )
+                return 1
+            print(f"Saved {len(listed)} file(s) to {args.output}", file=sys.stderr)
+        else:
+            print(table)
 
-    unicode_errors, error_paths = print_file_sizes(file_sizes, args)
-    
-    if error_paths or unicode_errors:
-        print_error_report(unicode_errors, error_paths, args)
-    
+    print_problems(listed, errors)
     return 0
 
 

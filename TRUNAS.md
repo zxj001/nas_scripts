@@ -22,3 +22,21 @@ df -h /tmp
 du -sh "/config/Plex Media Server"
 ls -lh /tmp/plex-migration.tar.gz
 
+
+
+# Backup profiles
+
+# SSH into the NAS and start a tmux session
+ssh -i ~/.ssh/nas_sync -p 2222 remote@192.168.1.201
+tmux new -s archive
+
+# Create the archive (-C makes paths inside it start at zhang/)
+tar -cf /mnt/Media/family/backups/mnt-media-windows-zhang.tar -C /mnt/Media/windows zhang
+
+tar -cf /mnt/Media/family/backups/mnt-media-windows-pszhang.tar -C /mnt/Media/windows pszhang
+
+tar -cf /mnt/Media/family/backups/mnt-media-windows-jason.tar -C /mnt/Media/windows jason
+
+# Check it afterwards
+ls -lh /mnt/Media/family/backups/zhang.tar
+tar -tf /mnt/Media/family/backups/zhang.tar | head

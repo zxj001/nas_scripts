@@ -431,6 +431,7 @@ def test_main_checks_main_directories_by_default(
     make_file(drive2 / "b.mkv", 200)
     make_file(drive2 / "c.mkv", 300)
     monkeypatch.setattr(disk_check, "MAIN_DIRECTORIES", [str(drive1), str(drive2)])
+    monkeypatch.setattr(disk_check, "NAS_DIRECTORIES", [])
 
     assert disk_check.main([]) == 0
 
@@ -441,6 +442,40 @@ def test_main_checks_main_directories_by_default(
     assert ["600", "B", "3", "Total"] in rows
     assert f"Scanning: {drive1}" in err
     assert out.endswith("All checks passed.\n")
+
+
+@pytest.mark.usefixtures("healthy_system")
+def test_main_adds_nas_directories_that_are_available(
+    repo_tmp: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    plex, family, unmounted = repo_tmp / "Plex", repo_tmp / "family", repo_tmp / "windows"
+    make_file(plex / "a.mkv", 100)
+    make_file(family / "b.jpg", 200)
+    monkeypatch.setattr(disk_check, "MAIN_DIRECTORIES", [str(plex)])
+    monkeypatch.setattr(disk_check, "NAS_DIRECTORIES", [str(family), str(unmounted)])
+
+    assert disk_check.main([]) == 0
+
+    out, err = capsys.readouterr()
+    rows = table_rows(out)
+    assert ["200", "B", "1", str(family)] in rows
+    assert ["300", "B", "2", "Total"] in rows
+    assert str(unmounted) not in out + err
+
+
+@pytest.mark.usefixtures("healthy_system")
+def test_main_skips_nas_directories_when_given_directories(
+    repo_tmp: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    plex, family = repo_tmp / "Plex", repo_tmp / "family"
+    plex.mkdir()
+    family.mkdir()
+    monkeypatch.setattr(disk_check, "NAS_DIRECTORIES", [str(family)])
+
+    disk_check.main([str(plex)])
+
+    out, err = capsys.readouterr()
+    assert str(family) not in out + err
 
 
 @pytest.mark.usefixtures("healthy_system")

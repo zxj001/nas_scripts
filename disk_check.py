@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Check disk space on the Plex folders' drives, and the health of every drive.
 
+The NAS folders are checked too when they're available on this machine.
+
 Exits with status 1 if anything needs attention, so it can run from cron.
 """
 
@@ -16,6 +18,7 @@ from typing import Any, Dict, List, NamedTuple, Optional, Sequence
 from find_largest_files import print_problems, scan_directory
 from nas_common import (
     MAIN_DIRECTORIES,
+    NAS_DIRECTORIES,
     display_path,
     existing_directories,
     human_size,
@@ -402,8 +405,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
 Exits with status 1 if a problem is found, so it can run from cron.
 
 Examples:
-  %(prog)s                     Check the Plex folders and every drive
-  %(prog)s ~/Downloads         Size up ~/Downloads instead of the Plex folders
+  %(prog)s                     Check the Plex and NAS folders and every drive
+  %(prog)s ~/Downloads         Size up ~/Downloads instead of the default folders
   %(prog)s --warn-percent 80   Warn once a filesystem is 80%% full
         """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -412,7 +415,8 @@ Examples:
         "directories",
         nargs="*",
         metavar="directory",
-        help="Directories to size up (default: the Plex folders)",
+        help="Directories to size up (default: the Plex folders, plus the NAS "
+        "folders if they're available here)",
     )
     parser.add_argument(
         "--warn-percent",
@@ -428,7 +432,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     """Script entry point."""
     args = parse_args(argv)
 
-    requested = args.directories or MAIN_DIRECTORIES
+    if args.directories:
+        requested = args.directories
+    else:
+        # The NAS folders are only here when the NAS is mounted, so skip
+        # them quietly rather than reporting them missing.
+        requested = MAIN_DIRECTORIES + [d for d in NAS_DIRECTORIES if os.path.isdir(d)]
+
     directories = existing_directories(requested)
 
     # A missing Plex folder usually means its drive isn't mounted.

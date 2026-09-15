@@ -12,6 +12,13 @@ MAIN_DIRECTORIES = [
     "/media/jasonz001/Drive2/Plex2/TV_Shows",
 ]
 
+# Shared folders on the TrueNAS box (192.168.1.201). Only there, or wherever
+# they're mounted at the same paths, so scripts use them when they exist.
+NAS_DIRECTORIES = [
+    "/mnt/Media/family",
+    "/mnt/Media/windows",
+]
+
 
 def human_size(num_bytes):
     units = ["B", "KiB", "MiB", "GiB", "TiB"]

@@ -150,6 +150,19 @@ def test_block_device_is_none_for_virtual_filesystems() -> None:
     assert disk_check.block_device("/proc") is None
 
 
+def test_block_device_is_none_without_sys(
+    repo_tmp: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Like FreeBSD on the NAS, where ZFS device numbers overflow os.major().
+    def overflow(dev: int) -> int:
+        raise OverflowError("can't convert negative int to unsigned")
+
+    monkeypatch.setattr(disk_check, "SYS_DEV_BLOCK", str(repo_tmp / "missing"))
+    monkeypatch.setattr(os, "major", overflow)
+
+    assert disk_check.block_device(str(repo_tmp)) is None
+
+
 def test_block_device_names_real_device(repo_tmp: Path) -> None:
     name = disk_check.block_device(str(repo_tmp))
     if name is None:

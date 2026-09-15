@@ -34,6 +34,10 @@ SSD_MAX_TEMP = 70
 # Where the kernel keeps each ext4 filesystem's error count.
 EXT4_SYSFS = "/sys/fs/ext4"
 
+# Where Linux maps device numbers to block devices. FreeBSD, which the NAS
+# runs, has no /sys.
+SYS_DEV_BLOCK = "/sys/dev/block"
+
 # udisks2 reads SMART data as root and shares it over D-Bus, so asking it
 # works without sudo or smartctl, even for the drives in the USB enclosure.
 UDISKS_COMMAND = [
@@ -140,10 +144,16 @@ def mount_point(path: str) -> str:
 def block_device(path: str) -> Optional[str]:
     """Kernel name of the partition holding ``path``, like "sda1".
 
-    None for filesystems with no block device, such as tmpfs.
+    None for filesystems with no block device, such as tmpfs, and on systems
+    without /sys.
     """
+    # Checked first because on the NAS, ZFS device numbers come back
+    # negative, and os.major() raises OverflowError on them.
+    if not os.path.isdir(SYS_DEV_BLOCK):
+        return None
+
     dev = os.stat(path).st_dev
-    sys_path = f"/sys/dev/block/{os.major(dev)}:{os.minor(dev)}"
+    sys_path = f"{SYS_DEV_BLOCK}/{os.major(dev)}:{os.minor(dev)}"
 
     if not os.path.exists(sys_path):
         return None

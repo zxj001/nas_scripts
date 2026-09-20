@@ -12,8 +12,10 @@ MAIN_DIRECTORIES = [
     "/media/jasonz001/Drive2/Plex2/TV_Shows",
 ]
 
-# Shared folders on the TrueNAS box (192.168.1.201). Only there, or wherever
-# they're mounted at the same paths, so scripts use them when they exist.
+# Shared folders that used to live on the retired TrueNAS box (192.168.1.201).
+# That server is gone; these paths only resolve where the same mount points still
+# exist. existing_directories() warns and skips any that are missing, so leaving
+# them listed is harmless. Update these once the replacement share is set up.
 NAS_DIRECTORIES = [
     "/mnt/Media/family",
     "/mnt/Media/windows",

@@ -1,3 +1,18 @@
+# TrueNAS / freenas - OBSOLETE
+
+> **This server is retired.** This file is kept as a historical record only.
+> Nothing below is reachable: `192.168.1.201` (freenas) and `192.168.1.202` (pms jail)
+> no longer answer.
+>
+> The Supermicro chassis these ran on now runs Proxmox VE as `pve1` at
+> `192.168.1.203` - the NIC MAC `0c:c4:7a:cf:39:94` is the same on both. The IPMI
+> address `192.168.1.118` still works and is the way to reach that chassis
+> out-of-band. See the Local Machines section of README.md.
+>
+> Plex now runs on `debianbeelink` at http://192.168.1.126:32400/web/index.html#!/
+
+## Historical notes
+
 Router Settings
 Gateway: 192.168.1.254
 DHCP range is: 192.168.1.64-192.168.1.220

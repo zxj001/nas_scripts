@@ -57,7 +57,7 @@ Current:
 |------|---------|--------|------|
 | `debianbeelink` | 192.168.1.126 | `ssh jasonz001@…` port 22 | Plex (:32400), Docker, GitHub runners |
 | `pve1.home.arpa` | 192.168.1.203 | https :8006, `ssh` port 22 | Proxmox VE host |
-| `debian-xfce` | Tailscale 100.74.143.43 | `ssh zhangxienjie@…` | Debian node on the tailnet |
+| `debian-xfce` | 192.168.1.133 (Tailscale 100.74.143.43) | `ssh zhangxienjie@…` port 22 | Debian desktop node, also on the tailnet |
 | IPMI (Supermicro) | 192.168.1.118 | web UI, https | Out-of-band console for the Proxmox chassis |
 | Router (AT&T) | 192.168.1.254 | web UI | Gateway, DHCP, address reservations |
 
@@ -116,20 +116,32 @@ https://192.168.1.203:8006
 ssh root@192.168.1.203
 ```
 
-### debian-xfce (Tailscale)
+### debian-xfce
 
-Debian node on the tailnet, reached by Tailscale IP rather than LAN address.
+Debian desktop node. Reachable two ways: directly on the LAN, or over the tailnet from
+outside the house.
 
+- **LAN:** `192.168.1.133`, MAC `bc:24:11:2e:0d:45` (DHCP lease, not reserved)
 - **Tailscale IP:** `100.74.143.43`
 - **Tailscale account:** `zhangxienjie@`
-- **OS:** Linux
+- **SSH:** port 22, open on the LAN - key auth only, password auth is refused
+- **IPv6:** `2600:1700:243b:a00::13` (router-assigned)
+- **Names:** `debian-xfce.local` (mDNS) and `debian-xfce.attlocal.net` (router DNS) both
+  resolve to `192.168.1.133`. `debian-xfce.home.arpa` does not resolve.
 
 ```
+// from inside the house
+ssh zhangxienjie@192.168.1.133
+// from outside, over the tailnet
 ssh zhangxienjie@100.74.143.43
 ```
 
-Only reachable from a machine that has joined the tailnet. `debianbeelink` has not
-joined it. To join from a Debian/Ubuntu machine:
+The `bc:24:11` MAC prefix is Proxmox's virtual NIC OUI, so this is most likely a VM on
+`pve1` rather than separate hardware - not yet confirmed against `qm list` on the host.
+
+`debianbeelink` has no key on this box, so SSH from there gets `Permission denied
+(publickey)` until one is installed. It has also not joined the tailnet, so it must use
+the LAN address. To join the tailnet from a Debian/Ubuntu machine:
 
 ```
 curl -fsSL https://tailscale.com/install.sh | sh

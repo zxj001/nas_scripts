@@ -105,6 +105,90 @@ ssh jasonz001@192.168.1.126
 - **LAN:** `192.168.1.118`, MAC `0c:c4:7a:cf:37:12`
 - Web UI over https. Independent of the host OS - use it for console access and power
   control on the Supermicro chassis (now the Proxmox host) when it is unreachable.
+- Default username is `ADMIN`. The password is either `ADMIN` (older boards) or the
+  unique one printed on the motherboard/chassis sticker ("BMC PWD" / "IPMI PWD").
+
+### ipmitool
+
+Run these on `pve1` (the Supermicro host). Talking to the BMC from the host OS goes
+through the kernel driver and needs no BMC login. Running it on any other machine
+won't work without `-I lanplus -H 192.168.1.118 -U ADMIN -P ...`.
+
+Install:
+
+```
+apt update
+apt install ipmitool
+modprobe ipmi_devintf ipmi_si
+```
+
+If `apt update` fails with a 401 from `enterprise.proxmox.com`, disable the paid
+repo and use the free one:
+
+```
+sed -i 's/^deb/#deb/' /etc/apt/sources.list.d/pve-enterprise.list
+echo "deb http://download.proxmox.com/debian/pve $(. /etc/os-release; echo $VERSION_CODENAME) pve-no-subscription" > /etc/apt/sources.list.d/pve-no-subscription.list
+apt update
+```
+
+(On newer Proxmox the file is `pve-enterprise.sources`; add `Enabled: no` to it instead.)
+
+`Could not open device at /dev/ipmi0` means the `modprobe` line didn't run, or you're
+not on the Supermicro host.
+
+#### Reset a forgotten IPMI password
+
+```
+// find the ADMIN user's ID (usually 2)
+ipmitool user list 1
+ipmitool user set password 2 'NewPassw0rd'
+ipmitool user enable 2
+```
+
+Last resort: Supermicro's `IPMICFG` tool, `ipmicfg -fd`, factory-resets the BMC. That
+also wipes its network config, so it may come back on a new DHCP address instead of
+`192.168.1.118`.
+
+#### Fans spinning up and down
+
+Quiet fans can idle below the BMC's lower RPM thresholds. The BMC then thinks a fan
+failed, ramps every fan to full, they rise above the threshold, slow down, and the
+cycle repeats.
+
+Check:
+
+```
+// RPM and lnr/lcr/lnc thresholds per fan
+ipmitool sensor | grep -i fan
+// repeated "Lower Critical going low" = this problem
+ipmitool sel list | tail -20
+```
+
+Fix by lowering each affected fan's thresholds (non-recoverable, critical,
+non-critical) well below its idle RPM:
+
+```
+ipmitool sensor thresh FAN1 lower 100 200 300
+ipmitool sensor thresh FAN2 lower 100 200 300
+```
+
+The BMC rounds to its own step size (often 100 or 140 RPM), so re-run `ipmitool sensor`
+to see what was actually set. Thresholds go back to defaults after a BMC firmware
+update or factory reset.
+
+Fan mode (also under Configuration -> Fan Mode in the web UI):
+
+```
+// show current mode
+ipmitool raw 0x30 0x45 0x00
+// Standard
+ipmitool raw 0x30 0x45 0x01 0x00
+// Full: always 100%, loud but no cycling
+ipmitool raw 0x30 0x45 0x01 0x01
+```
+
+If the fan thresholds look fine, check `ipmitool sensor` for a temperature near its
+upper threshold instead - that's a real cooling problem (dust, failing fan).
 
 ## pve1.home.arpa - Proxmox VE
 

@@ -45,6 +45,20 @@ gsettings get org.gnome.desktop.session idle-delay
 
 ```
 
+# Scripts
+
+Python helpers for the Plex drives live in `scripts/`. Run them from the repo root,
+e.g. `python3 scripts/disk_check.py`; each takes `--help`.
+
+| Script | Purpose |
+|--------|---------|
+| `scripts/disk_check.py` | Disk space on the Plex folders' drives plus drive health; exits 1 if anything needs attention (cron-friendly) |
+| `scripts/find_largest_files.py` | List the largest files under the Plex folders (or given directories) |
+| `scripts/defrag.py` | Find the most fragmented files using `filefrag`; `--defrag` runs `e4defrag` on them |
+| `scripts/nas_common.py` | Shared settings (Plex folder list) and helpers, not run directly |
+
+Tests: `python3 -m pytest` from the repo root.
+
 # Local Machines
 
 Home LAN is `192.168.1.0/24`. Gateway (AT&T router) is `192.168.1.254`, DHCP pool

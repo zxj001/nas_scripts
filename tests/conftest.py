@@ -1,4 +1,5 @@
 import shutil
+import sys
 import tempfile
 from pathlib import Path
 from typing import Iterator
@@ -8,6 +9,9 @@ import pytest
 # /tmp is tmpfs on the NAS, and filefrag/e4defrag need a real filesystem
 # such as ext4, so tests work in the repo's (gitignored) tmp/ directory.
 REPO_TMP = Path(__file__).resolve().parent.parent / "tmp"
+
+# The scripts live in scripts/ and import each other as top-level modules.
+sys.path.insert(0, str(REPO_TMP.parent / "scripts"))
 
 
 @pytest.fixture

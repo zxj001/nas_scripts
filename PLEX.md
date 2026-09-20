@@ -1,6 +1,12 @@
 # Plex Server Setup
 
-Setup notes for the Debian Plex server: service config, media drives, and syncing media from the TrueNAS.
+Setup notes for the Plex server on `debianbeelink` (192.168.1.126): service config,
+media drives, and media syncing.
+
+Web UI: http://192.168.1.126:32400/web/index.html#!/
+
+> **Note:** the TrueNAS that used to be the sync source is retired. The sync section
+> below is kept for reference but will not run as written - see the warning there.
 
 ## Prerequisites
 
@@ -133,12 +139,22 @@ df -h | grep Drive
 | Anime Movies | `/media/jasonz001/Drive2/Plex2/Anime_Movies` |
 | TV Shows     | `/media/jasonz001/Drive2/Plex2/TV_Shows`     |
 
-### Sync from the TrueNAS (over SSH)
+### Sync from the TrueNAS (over SSH) - OBSOLETE
+
+> **These commands no longer work.** The TrueNAS at `192.168.1.201` is retired and does
+> not answer; its hardware now runs Proxmox as `pve1` (192.168.1.203). They are kept
+> here as a template - the flags and target paths are still correct, only the source
+> host, user, port, key and source paths need replacing once a new media source exists.
+>
+> **TODO:** point these at the replacement share (host, user, and the path that now
+> holds `family/videos/...`).
+
+Former source:
 
 - **Host:** `192.168.1.201`, SSH port `2222`
 - **Key:** `~/.ssh/nas_sync`
 
-The commands below include `-n` (dry run): they only list what would change. Check the output, then remove `-n` to do the real sync. This matters because `--delete` removes anything on the Plex drives that isn't on the NAS.
+The commands below include `-n` (dry run): they only list what would change. Check the output, then remove `-n` to do the real sync. This matters because `--delete` removes anything on the Plex drives that isn't on the source.
 
 ```bash
 # Drive1
@@ -151,14 +167,25 @@ rsync -ahPn --preallocate --no-delay-updates --size-only --delete --info=progres
 rsync -ahPn --preallocate --no-delay-updates --size-only --delete --info=progress2 -e "ssh -i ~/.ssh/nas_sync -p 2222" "remote@192.168.1.201:/mnt/Media/family/videos/TV Shows/" "/media/jasonz001/Drive2/Plex2/TV_Shows/"
 ```
 
-### Other folders
+### Other folders - OBSOLETE
 
-```
+Same retired source as above; kept as a template.
+
+```bash
 rsync -ahPn --preallocate --no-delay-updates --size-only --delete --info=progress2 -e "ssh -i ~/.ssh/nas_sync -p 2222" "remote@192.168.1.201:/mnt/Media/family/music/" "/media/jasonz001/Drive2/Music/"
 
 rsync -ahPn --preallocate --no-delay-updates --size-only --delete --info=progress2 -e "ssh -i ~/.ssh/nas_sync -p 2222" "remote@192.168.1.201:/mnt/Media/family/backups/" "/media/jasonz001/Drive2/Backups/"
 
 rsync -ahPn --preallocate --no-delay-updates --size-only --delete --info=progress2 -e "ssh -i ~/.ssh/nas_sync -p 2222" "remote@192.168.1.201:/mnt/Media/family/software/" "/media/jasonz001/Drive2/Software/"
+```
+
+### Mirror backups between the local drives
+
+Local drive to local drive, no NAS involved - this one still works as written. Note
+there is no `--delete` here, so it only adds and updates.
+
+```bash
+rsync -ahPn --preallocate --no-delay-updates --size-only --info=progress2 "/media/jasonz001/Drive2/Backups/" "/media/jasonz001/Drive1/Backups/"
 ```
 
 | Flag                 | Purpose                                                               |
@@ -170,9 +197,9 @@ rsync -ahPn --preallocate --no-delay-updates --size-only --delete --info=progres
 | `--preallocate`      | Reserve each file's full size on disk before writing (see below)      |
 | `--no-delay-updates` | Rename each file into place as soon as it finishes                    |
 | `--size-only`        | Skip files whose size already matches, ignoring timestamps            |
-| `--delete`           | Remove files on the Plex drive that no longer exist on the NAS        |
+| `--delete`           | Remove files on the Plex drive that no longer exist on the source     |
 | `--info=progress2`   | Show overall progress for the whole transfer instead of per file      |
-| `-e "ssh ..."`       | Connect with the `nas_sync` key on port 2222                          |
+| `-e "ssh ..."`       | Connect over SSH with the given key and port                          |
 
 ### Why rsync keeps the files (mostly) unfragmented
 

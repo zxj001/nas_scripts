@@ -44,3 +44,126 @@ gsettings get org.gnome.settings-daemon.plugins.power sleep-inactive-ac-type
 gsettings get org.gnome.desktop.session idle-delay
 
 ```
+
+# Local Machines
+
+Home LAN is `192.168.1.0/24`. Gateway (AT&T router) is `192.168.1.254`, DHCP pool
+is `192.168.1.64`-`192.168.1.220`. To pin a "static" address, first set the device
+to DHCP so the router discovers it, then assign the allocated address (see TRUNAS.md).
+
+Current:
+
+| Host | Address | Access | Role |
+|------|---------|--------|------|
+| `debianbeelink` | 192.168.1.126 | `ssh jasonz001@…` port 22 | Plex (:32400), Docker, GitHub runners |
+| `pve1.home.arpa` | 192.168.1.203 | https :8006, `ssh` port 22 | Proxmox VE host |
+| `debian-xfce` | Tailscale 100.74.143.43 | `ssh zhangxienjie@…` | Debian node on the tailnet |
+| IPMI (Supermicro) | 192.168.1.118 | web UI, https | Out-of-band console for the Proxmox chassis |
+| Router (AT&T) | 192.168.1.254 | web UI | Gateway, DHCP, address reservations |
+
+Retired, kept for the historical record:
+
+| Host | Address | Role |
+|------|---------|------|
+| `freenas` (TrueNAS) | 192.168.1.201 | Media/backup storage - hardware now runs Proxmox |
+| `pms` (Plex jail) | 192.168.1.202 | Plex on the TrueNAS box |
+
+## debianbeelink
+
+Beelink AZW EQ, Debian 13 (trixie), x86-64. Primary home server.
+
+- **LAN:** `192.168.1.126` on `enp2s0` (DHCP lease, not reserved)
+- **SSH:** `ssh jasonz001@192.168.1.126` (port 22)
+- **Plex web UI:** http://192.168.1.126:32400/web/index.html#!/
+- **Storage:** 452G NVMe root, plus two 20T media drives
+  - `/media/jasonz001/Drive1` (`/dev/sda1`) - Plex1: Disney, Movies
+  - `/media/jasonz001/Drive2` (`/dev/sdb1`) - Plex2: Anime, Anime_Movies, TV_Shows, Music, Backups, Software
+- **Services running:** `plexmediaserver` (32400), `docker`, `ssh`, and three GitHub
+  Actions runners (`Nicu-Labs-trip-planner.debianbeelink`, `Nicu-Labs.debianbeelink-2`,
+  `Nicu-Labs.debianbeelink-3`) - see GITHUB_RUNNER.md
+- **Enabled but not currently running:** `mcbedrock` (Minecraft Bedrock, see MINECRAFT.md)
+- **Ports open on the LAN:** 22 (ssh), 80, 32400 (Plex), 5434 + 33314 (Postgres
+  containers), 9004/9005 (MinIO container)
+
+```
+ssh jasonz001@192.168.1.126
+```
+
+## IPMI (Supermicro out-of-band)
+
+- **LAN:** `192.168.1.118`, MAC `0c:c4:7a:cf:37:12`
+- Web UI over https. Independent of the host OS - use it for console access and power
+  control on the Supermicro chassis (now the Proxmox host) when it is unreachable.
+
+## pve1.home.arpa - Proxmox VE
+
+Proxmox hypervisor, on the Supermicro chassis (its NIC MAC `0c:c4:7a:cf:39:94` matches
+the MAC TRUNAS.md lists for the old TrueNAS `igb0`).
+
+- **LAN:** `192.168.1.203`, listening on both `:8006` and `:22`
+- **Web UI:** https://192.168.1.203:8006 (self-signed cert, so expect a browser warning)
+- **Hostname** `pve1.home.arpa` is not served by the router's DNS - use the IP, or add
+  it to `/etc/hosts` on whichever machine you want to use the name from:
+
+```
+echo "192.168.1.203  pve1.home.arpa pve1" | sudo tee -a /etc/hosts
+```
+
+```
+// web UI
+https://192.168.1.203:8006
+// shell
+ssh root@192.168.1.203
+```
+
+### debian-xfce (Tailscale)
+
+Debian node on the tailnet, reached by Tailscale IP rather than LAN address.
+
+- **Tailscale IP:** `100.74.143.43`
+- **Tailscale account:** `zhangxienjie@`
+- **OS:** Linux
+
+```
+ssh zhangxienjie@100.74.143.43
+```
+
+Only reachable from a machine that has joined the tailnet. `debianbeelink` has not
+joined it. To join from a Debian/Ubuntu machine:
+
+```
+curl -fsSL https://tailscale.com/install.sh | sh
+sudo tailscale up
+tailscale status
+```
+
+---
+
+# Retired Machines
+
+Kept for the historical record only. None of these are reachable.
+
+## freenas / TrueNAS - OBSOLETE (historical record)
+
+**This server is retired.** It is kept here only as a historical record. The Supermicro
+chassis it ran on now runs Proxmox as `pve1` at `192.168.1.203` - the NIC MAC
+`0c:c4:7a:cf:39:94` is the same on both, which is why `192.168.1.201` no longer answers.
+
+Anything below is how it *used* to be reached, not how things work now. The sync and
+backup commands in PLEX.md and TRUNAS.md still point at `192.168.1.201` and will not
+connect as written; both files are marked obsolete and the commands are kept only as
+templates for whatever replaces the share.
+
+- **LAN (former):** `192.168.1.201`, MAC `0c:c4:7a:cf:39:94` (igb0)
+- **SSH (former):** port `2222`, user `remote`, key `~/.ssh/nas_sync`
+- **Shares (former):** `/mnt/Media/family`, `/mnt/Media/windows`
+- The `mynas` alias in `jasonz001`'s `~/.ssh/config` on `debianbeelink` still points at
+  `192.168.1.201:2222` and is therefore stale
+
+## pms (Plex jail on the old NAS) - OBSOLETE
+
+Part of the retired TrueNAS box above, kept for the historical record.
+
+- **LAN (former):** `192.168.1.202`, MAC `0e:c4:7a:57:7e:c1` (vnet0)
+- **Web UI (former):** http://192.168.1.202:32400/web
+- The Plex instance actually in use is the one on `debianbeelink`.

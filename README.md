@@ -51,6 +51,17 @@ Home LAN is `192.168.1.0/24`. Gateway (AT&T router) is `192.168.1.254`, DHCP poo
 is `192.168.1.64`-`192.168.1.220`. To pin a "static" address, first set the device
 to DHCP so the router discovers it, then assign the allocated address (see TRUNAS.md).
 
+**Unreserved leases.** `debianbeelink` (.126), `pve1` (.203) and `debian-xfce` (.133)
+all sit inside the DHCP pool with no reservation, so their addresses are leases the
+router could in principle hand out differently. In practice the router keeps giving the
+same address to the same MAC, and it has held for all three so far. It is still worth
+reserving them in the router UI, because these addresses are written into this file and
+into the Plex URLs in PLEX.md, and a lease that moves makes those docs quietly wrong.
+`192.168.1.118` (IPMI) and `192.168.1.254` (router) are outside the pool and not at risk.
+
+If you would rather not reserve them, prefer the names over the numbers where you can -
+`debian-xfce.local` resolves over mDNS and survives a lease change.
+
 Current:
 
 | Host | Address | Access | Role |
@@ -100,7 +111,7 @@ ssh jasonz001@192.168.1.126
 Proxmox hypervisor, on the Supermicro chassis (its NIC MAC `0c:c4:7a:cf:39:94` matches
 the MAC TRUNAS.md lists for the old TrueNAS `igb0`).
 
-- **LAN:** `192.168.1.203`, listening on both `:8006` and `:22`
+- **LAN:** `192.168.1.203` (DHCP lease, not reserved), listening on both `:8006` and `:22`
 - **Web UI:** https://192.168.1.203:8006 (self-signed cert, so expect a browser warning)
 - **Hostname** `pve1.home.arpa` is not served by the router's DNS - use the IP, or add
   it to `/etc/hosts` on whichever machine you want to use the name from:

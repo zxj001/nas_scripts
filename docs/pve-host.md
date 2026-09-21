@@ -122,6 +122,43 @@ the install line).
 Then approve the route in the Tailscale admin console (Machines → pve1 → Edit route
 settings). The iPhone app accepts subnet routes by default.
 
+## Temperatures
+
+Run these commands as root on the Proxmox host, over SSH or in the node's **Shell**:
+
+```sh
+apt update
+apt install lm-sensors
+sensors
+watch -n 2 sensors    # refresh every two seconds; Ctrl-C to stop
+```
+
+`sensors` displays readings exposed by loaded drivers; installing it does not guarantee
+that every physical sensor is available ([manual](https://manpages.debian.org/trixie/lm-sensors/sensors.1.en.html)).
+This is a manual setup step; `proxmox_setup.sh` does not install it.
+
+If the Intel CPU's package/core readings are missing, try its
+[`coretemp` driver](https://docs.kernel.org/hwmon/coretemp.html):
+
+```sh
+modprobe coretemp
+sensors
+```
+
+Only if loading the driver produces the missing readings, persist it for reboot:
+
+```sh
+printf 'coretemp\n' > /etc/modules-load.d/coretemp.conf
+```
+
+This driver is for supported Intel CPUs. A module error or missing readings needs
+hardware-specific investigation; running these commands inside a VM will not expose
+the host's CPU sensors.
+
+For the Supermicro BMC's CPU, system, PCH and DIMM readings, or a no-install kernel
+readout, see [Temperatures](../README.md#temperatures). The BMC path also reports
+alarm thresholds. Check readings again after reboot if you added a module file.
+
 ## Done checklist
 
 - [ ] Fresh key login works:

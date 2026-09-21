@@ -74,6 +74,60 @@ Beelink AZW EQ, Debian 13 (trixie), x86-64. Primary home server.
 ssh jasonz001@192.168.1.126
 ```
 
+## Temperatures
+
+Read host temperatures over SSH or from the Proxmox node's **Shell**. For installation
+and missing CPU readings, see [host temperature setup](docs/pve-host.md#temperatures).
+
+**Linux, nothing to install.** Loaded hardware-monitoring drivers expose readings
+under `/sys/class/hwmon`. This prints the temperature inputs in degrees C:
+
+```
+for t in /sys/class/hwmon/hwmon*/temp*_input; do
+    v=$(cat "$t" 2>/dev/null) || continue
+    name=$(cat "${t%/*}/name" 2>/dev/null) || name=${t%/*}
+    label=$(cat "${t%_input}_label" 2>/dev/null) || label=${t##*/}
+    awk -v name="$name" -v label="$label" -v v="$v" \
+        'BEGIN { printf "%s %s: %.1f C\n", name, label, v / 1000 }'
+done
+```
+
+`coretemp` is the CPU (per core plus `Package id 0`), `nvme` the SSD, `acpitz` the
+motherboard's ACPI zone. Sensors with no reading (e.g. `iwlwifi`) are skipped.
+
+No output means no readable hwmon temperature inputs, not that the machine is cold.
+Run this on the host: a VM generally cannot see its host's physical sensors. These
+inputs normally use millidegrees C; for chips needing conversion, use `sensors` from
+`lm-sensors` instead ([kernel interface](https://www.kernel.org/doc/html/latest/hwmon/sysfs-interface.html)).
+
+**Supermicro host (`pve1`) via the BMC.** The BMC has its own sensors with the alarm
+thresholds next to them, independently of the host OS. See [ipmitool](#ipmitool) for
+setup. On the host, as root:
+
+```
+ipmitool sensor | grep -i temp
+```
+
+From another machine with `ipmitool` installed, prompt for the BMC password:
+
+```sh
+ipmitool -I lanplus -H 192.168.1.118 -U ADMIN -a sensor | grep -i temp
+```
+
+Example output (readings and thresholds depend on the board):
+
+```
+CPU Temp         | 31.000     | degrees C  | ok    | ... | 83.000    | 88.000    | 88.000
+System Temp      | 27.000     | degrees C  | ok    | ... | 80.000    | 85.000    | 90.000
+PCH Temp         | 43.000     | degrees C  | ok    | ... | 90.000    | 95.000    | 100.000
+P1-DIMMA1 Temp   | 28.000     | degrees C  | ok    | ... | 80.000    | 85.000    | 90.000
+```
+
+The last three columns are the upper non-critical / critical / non-recoverable
+thresholds. `CPU Temp` here is the BMC's reading; it can differ from the kernel's
+`coretemp` package value. `na` means unavailable, not zero. For named threshold fields,
+run `ipmitool sensor get 'CPU Temp'` ([ipmitool manual](https://manpages.debian.org/trixie/ipmitool/ipmitool.1.en.html)).
+
 ## IPMI (Supermicro out-of-band)
 
 - **LAN:** `192.168.1.118`, MAC `0c:c4:7a:cf:37:12`
@@ -86,14 +140,15 @@ ssh jasonz001@192.168.1.126
 
 Run these on `pve1` (the Supermicro host). Talking to the BMC from the host OS goes
 through the kernel driver and needs no BMC login. Running it on any other machine
-won't work without `-I lanplus -H 192.168.1.118 -U ADMIN -P ...`.
+needs `-I lanplus -H 192.168.1.118 -U ADMIN -a` (prompts for the BMC password).
 
 Install:
 
 ```
 apt update
 apt install ipmitool
-modprobe ipmi_devintf ipmi_si
+modprobe ipmi_devintf
+modprobe ipmi_si
 ```
 
 If `apt update` fails with a 401 from `enterprise.proxmox.com`, disable the paid

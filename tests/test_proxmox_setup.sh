@@ -17,6 +17,57 @@ F="$(mktemp -d)"
 trap 'rm -rf "$F"' EXIT
 export PVE_SETUP_PREFIX="$F"
 
+# CI runs on Ubuntu with APT installed. On other development hosts the stubbed
+# checks still run, but cannot establish real APT parsing or migration success.
+APT_CACHE="$(command -v apt-cache || true)"
+if [ -z "$APT_CACHE" ]; then
+    if [ "${GITHUB_ACTIONS:-}" = true ]; then fail "CI requires apt-cache for repository parser checks"; fi
+    echo "skip: real APT parser unavailable; real PVE migration remains unverified"
+fi
+
+assert_apt_sources() {
+    local expected="$1" parser="$F/apt-parser" rc=0
+    shift
+    [ -n "$APT_CACHE" ] || return 0
+    rm -rf "$parser"
+    mkdir -p "$parser/etc/sources.list.d" "$parser/etc/apt.conf.d" \
+        "$parser/state/lists/partial" "$parser/cache" "$parser/log" "$parser/methods"
+    : >"$parser/state/status"
+    : >"$parser/etc/sources.list"
+    # Parse exact copies of the generated PVE sources and administrator entries
+    # under test, without the unrelated synthetic Debian fixtures.
+    cp "$@" "$parser/etc/sources.list.d/"
+    # APT_CONFIG is loaded BEFORE apt.conf.d; command-line overrides alone
+    # would still read host configuration and hooks. All mutable state is local.
+    cat >"$parser/apt.conf" <<EOF
+Dir "$parser";
+Dir::Etc "$parser/etc";
+Dir::State "$parser/state";
+Dir::State::status "$parser/state/status";
+Dir::Cache "$parser/cache";
+Dir::Log "$parser/log";
+Dir::Bin::methods "$parser/methods";
+APT::Architecture "amd64";
+APT::Architectures { "amd64"; };
+EOF
+    # policy builds the source list offline; no update/install or acquisition
+    # occurs. Empty methods additionally prevent any network transport execution.
+    APT_CONFIG="$parser/apt.conf" LC_ALL=C "$APT_CACHE" policy \
+        >"$parser/output" 2>"$parser/error" || rc=$?
+    if [ "$expected" = compatible ]; then
+        if [ "$rc" != 0 ]; then
+            cat "$parser/error" >&2
+            fail "real APT rejected compatible sources"
+        fi
+    else
+        [ "$rc" != 0 ] || fail "real APT accepted conflicting Signed-By"
+        grep -q 'Conflicting values set for option Signed-By' "$parser/error" || {
+            cat "$parser/error" >&2
+            fail "real APT failed for a reason other than signing conflict"
+        }
+    fi
+}
+
 # The script's definitions, then stubs that shadow the real commands, then main.
 HARNESS="$F/harness.sh"
 {
@@ -227,6 +278,7 @@ EOF
 cmp -s "$F/want" "$A/pve-no-subscription.sources" ||
     fail "pve-no-subscription.sources: $(cat "$A/pve-no-subscription.sources")"
 [ "$(status_of repos)" = "done" ] || fail "repos not done after the step"
+assert_apt_sources compatible "$A/pve-no-subscription.sources" "$A/pve-enterprise.sources" "$A/ceph.sources"
 
 # 12. Idempotent: the runner skips it, and do_repos itself changes nothing.
 before="$(snapshot)"
@@ -265,6 +317,7 @@ run --yes --only repos >/dev/null || fail "repos step failed on a PVE 8 layout"
 grep -qx 'Suites: bookworm' "$A/pve-no-subscription.sources" || fail "suite not taken from os-release"
 if grep -q ceph "$A/pve-no-subscription.sources"; then fail "Ceph repo added without a Ceph enterprise repo"; fi
 [ "$(status_of repos)" = "done" ] || fail "repos not done on the PVE 8 layout"
+assert_apt_sources compatible "$A/pve-no-subscription.sources" "$A/pve-enterprise.list"
 before="$(snapshot)"
 HARNESS_CALL=do_repos run >/dev/null
 [ "$(snapshot)" = "$before" ] || fail "do_repos rerun changed the .list layout"
@@ -719,6 +772,7 @@ EOF
     expected_keyring_sources "$ARCHIVE_KEY" >"$F/want"
     cmp -s "$F/want" "$A/pve-no-subscription.sources" || fail "deb-src prevented binary replacement: $layout"
     cmp -s "$F/public-before" "$A/public.$layout" || fail "source-only entries changed"
+    assert_apt_sources compatible "$A/pve-no-subscription.sources" "$A/public.$layout"
     assert_repos_rerun
     rm "$A/pve-no-subscription.sources"
     [ "$(status_of repos)" = todo ] || fail "source-only PVE counted as binary: $layout"
@@ -750,6 +804,7 @@ EOF
                 if [ -n "$setting" ]; then printf 'Signed-By: %s\n' "$setting" >>"$A/public.sources"; fi
             fi
             [ "$(status_of repos 2>/dev/null)" = todo ] || fail "conflicting $layout $repo $signing counted as done"
+            assert_apt_sources conflict "$A/pve-no-subscription.sources" "$A/public.$layout"
             keyring_enterprise_fixture bookworm
             rm -rf "$F/apt-before"
             cp -R "$F/etc/apt" "$F/apt-before"

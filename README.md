@@ -11,6 +11,7 @@ Helpers live in `scripts/`. Run them from the repo root, e.g.
 | Script | Purpose |
 |--------|---------|
 | `scripts/setup.sh` | Set up a Debian 13 or macOS machine the way [docs/](docs/README.md) describes; `--status` shows what is left to do |
+| `scripts/proxmox_setup.sh` | The same for the Proxmox VE host: root SSH keys, SSH hardening, Tailscale, optional subnet router ([docs/pve-host.md](docs/pve-host.md)) |
 | `scripts/disk_check.py` | Disk space on the Plex folders' drives plus drive health; exits 1 if anything needs attention (cron-friendly) |
 | `scripts/find_largest_files.py` | List the largest files under the Plex folders (or given directories) |
 | `scripts/defrag.py` | Find the most fragmented files using `filefrag`; `--defrag` runs `e4defrag` on them |
@@ -185,7 +186,8 @@ ssh root@192.168.1.203
 ```
 
 SSH hardening (root by key only) and Tailscale on the host: see
-[docs/pve-host.md](docs/pve-host.md). Do not run `setup-machine` here.
+[docs/pve-host.md](docs/pve-host.md), automated by `scripts/proxmox_setup.sh`. Do not run
+`setup-machine` here.
 
 ### debian-xfce
 

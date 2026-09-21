@@ -1,5 +1,15 @@
 # Proxmox host: SSH and Tailscale
 
+Automated by `scripts/proxmox_setup.sh`. As root on the host:
+
+```
+curl -fsSL https://raw.githubusercontent.com/zxj001/nas_scripts/main/scripts/proxmox_setup.sh | bash
+```
+
+It offers `ssh-keys`, `ssh-harden`, `tailscale` and `subnet-router` (off by default), with
+the same `--status`, `--yes` and `--only a,b` flags as `setup-machine`. Rerun the line to
+update. It refuses to run anywhere but a Proxmox VE host.
+
 Host-side, on `pve1` itself (192.168.1.203, web UI :8006). The numbered steps cover a
 Debian guest VM or workstation; this page covers the Proxmox VE host under them.
 
@@ -8,7 +18,7 @@ Debian guest VM or workstation; this page covers the Proxmox VE host under them.
 Proxmox VE is Debian underneath, but it is not a normal Debian box:
 
 - The web UI's shell, migration and clustering log in as **root over SSH** between nodes.
-- So do **not** run `setup-machine` here, and do **not** set `PermitRootLogin no`.
+- So do **not** run `setup-machine` here (use `proxmox_setup.sh` above), and do **not** set `PermitRootLogin no`.
 - The right hardening is root by key only: `PermitRootLogin prohibit-password` plus
   `PasswordAuthentication no`.
 

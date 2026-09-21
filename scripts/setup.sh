@@ -5,7 +5,7 @@
 #
 # Everything below is a definition; the last line calls main, so a half
 # downloaded copy does nothing.
-set -euo pipefail
+set -Eeuo pipefail
 
 REPO_URL="https://github.com/zxj001/nas_scripts"
 REPO_DIR="$HOME/tools/nas_scripts"
@@ -20,11 +20,12 @@ REPO_DIR="$HOME/tools/nas_scripts"
 # Adding a step is adding its name here plus those three functions, nothing
 # else. tests/test_setup.sh fails if a registered step is missing one.
 #
-# A do_ that exits 75 means "stop here, rerun later" - the runner stops
+# A do_ that returns 75 means "stop here, rerun later" - the runner stops
 # without an error. sudo needs it: a new group only applies to a new login.
 #
-# sudo comes first: every other step shells out to sudo.
-STEPS=(sudo upgrade guest-agent no-sleep ssh ssh-keys ssh-harden dev-tools firstmate)
+# brew comes first: every other macOS step installs through it. sudo comes
+# next: every other Debian step shells out to sudo.
+STEPS=(brew sudo upgrade guest-agent no-sleep ssh ssh-keys ssh-harden tailscale dev-tools gh node codex pi claude herdr firstmate)
 
 usage() {
     cat <<'EOF'
@@ -69,7 +70,7 @@ do_sudo() {
     log "asking for the root password to add $(id -un) to the sudo group"
     su -c "apt-get update && apt-get install -y sudo && /usr/sbin/usermod -aG sudo $(id -un)" </dev/tty
     echo "log out, log back in, then rerun setup-machine"
-    exit 75
+    return 75
 }
 
 # "Always offered" in practice means: offered whenever apt has something to
@@ -167,13 +168,148 @@ EOF
     log "verify a new key-based session before closing this one"
 }
 
-check_dev_tools() { have git && have jq && have rg; }
+# brew is macOS only and comes first: every other macOS step installs through it.
+check_brew() {
+    [ "$OS" = macos ] || return 2
+    have brew
+}
+default_brew() { echo yes; }
+do_brew() {
+    local brew
+    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" </dev/tty
+    if [ -x /opt/homebrew/bin/brew ]; then brew=/opt/homebrew/bin/brew; else brew=/usr/local/bin/brew; fi
+    [ -x "$brew" ]
+    echo "eval \"\$($brew shellenv)\"" >>"$HOME/.zprofile"
+    eval "$("$brew" shellenv)"
+}
+
+check_tailscale() {
+    local ts=tailscale
+    if [ "$OS" = macos ] && ! have tailscale; then
+        ts=/Applications/Tailscale.app/Contents/MacOS/Tailscale
+    fi
+    "$ts" status >/dev/null 2>&1
+}
+default_tailscale() { echo yes; }
+do_tailscale() {
+    case "$OS" in
+        debian)
+            curl -fsSL https://tailscale.com/install.sh | sh
+            sudo tailscale up  # prints a URL to open
+            ;;
+        macos)
+            brew install --cask tailscale
+            log "open the Tailscale app and sign in, then rerun --status"
+            ;;
+    esac
+}
+
+check_dev_tools() {
+    have git && have jq && have rg &&
+        [ -d "$HOME/projects" ] && [ -d "$HOME/tools" ]
+}
 default_dev_tools() { echo yes; }
 do_dev_tools() {
     case "$OS" in
-        debian) sudo apt-get update && sudo apt-get install -y git curl ca-certificates build-essential jq ripgrep ;;
-        macos) brew install jq ripgrep ;;
+        debian)
+            sudo apt-get update
+            sudo apt-get install -y git curl ca-certificates build-essential jq ripgrep
+            ;;
+        macos) brew install jq ripgrep ;;  # git comes with the Xcode CLT
     esac
+    mkdir -p "$HOME/projects" "$HOME/tools"
+}
+
+check_gh() { have gh; }
+default_gh() { echo yes; }
+do_gh() {
+    case "$OS" in
+        debian)
+            # GitHub's apt repo, verbatim from docs/05-dev-tools.md.
+            local keyring=/etc/apt/keyrings/githubcli-archive-keyring.gpg
+            sudo apt-get update
+            sudo apt-get install -y wget
+            sudo mkdir -p -m 755 /etc/apt/keyrings
+            wget -nv -O- https://cli.github.com/packages/githubcli-archive-keyring.gpg |
+                sudo tee "$keyring" >/dev/null
+            sudo chmod go+r "$keyring"
+            sudo mkdir -p -m 755 /etc/apt/sources.list.d
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=$keyring] https://cli.github.com/packages stable main" |
+                sudo tee /etc/apt/sources.list.d/github-cli.list >/dev/null
+            sudo apt-get update
+            sudo apt-get install -y gh
+            ;;
+        macos) brew install gh ;;
+    esac
+}
+
+# Pi needs Node 22.19.0 or newer, so a too-old node counts as todo.
+check_node() {
+    local v
+    have node || return 1
+    v="$(node -v)"
+    [ "$(printf '22.19.0\n%s\n' "${v#v}" | sort -V | head -n1)" = 22.19.0 ]
+}
+default_node() { echo yes; }
+do_node() {
+    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.7/install.sh | bash
+    # Source nvm here too, so the pi step below sees npm in this same run.
+    export NVM_DIR="$HOME/.nvm"
+    # shellcheck source=/dev/null
+    [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+    nvm install 22
+    nvm alias default 22
+}
+
+check_codex() { have codex; }
+default_codex() { echo yes; }
+do_codex() {
+    case "$OS" in
+        debian) curl -fsSL https://chatgpt.com/codex/install.sh | sh ;;
+        macos) brew install --cask codex ;;
+    esac
+}
+
+check_pi() { have pi; }
+default_pi() { echo yes; }
+do_pi() { npm install -g --ignore-scripts @earendil-works/pi-coding-agent; }
+
+check_claude() { have claude; }
+default_claude() { echo yes; }
+do_claude() {
+    case "$OS" in
+        debian)
+            curl -fsSL https://claude.ai/install.sh | bash
+            case ":$PATH:" in
+                *":$HOME/.local/bin:"*) ;;
+                *)
+                    # shellcheck disable=SC2016  # literal, expanded when .bashrc runs
+                    echo 'export PATH="$HOME/.local/bin:$PATH"' >>"$HOME/.bashrc"
+                    export PATH="$HOME/.local/bin:$PATH"
+                    ;;
+            esac
+            ;;
+        macos) brew install --cask claude-code ;;
+    esac
+}
+
+check_herdr() { have herdr; }
+default_herdr() { echo yes; }
+do_herdr() {
+    curl -fsSL https://herdr.dev/install.sh | sh
+    if [ "$OS" = macos ]; then
+        case ":$PATH:" in
+            *":$HOME/.local/bin:"*) ;;
+            *)
+                # shellcheck disable=SC2016  # literal, expanded when .zprofile runs
+                echo 'export PATH="$HOME/.local/bin:$PATH"' >>"$HOME/.zprofile"
+                export PATH="$HOME/.local/bin:$PATH"
+                ;;
+        esac
+    fi
+    if have claude; then
+        herdr integration install claude
+    fi
 }
 
 check_firstmate() { [ -d "$HOME/tools/firstmate/.git" ]; }
@@ -220,7 +356,7 @@ parse_args() {
             --yes) OPT_YES=1 ;;
             --only)
                 if [ $# -lt 2 ]; then
-                    echo "--only needs a step list, e.g. --only dev-tools,firstmate" >&2
+                    echo "--only needs a step list, e.g. --only node,pi" >&2
                     usage >&2
                     exit 2
                 fi
@@ -286,6 +422,18 @@ reboot_reminder() {
     fi
 }
 
+# Nothing below can be automated: each one opens its own TUI or browser flow.
+signin_list() {
+    log "done. Sign in where needed:"
+    echo "  gh auth login"
+    echo "  codex          # Sign in with ChatGPT"
+    echo "  pi             # then /login"
+    echo "  claude"
+    if [ "$OS" = macos ]; then
+        echo "  Tailscale.app  # open it and sign in"
+    fi
+}
+
 main() {
     parse_args "$@"
     if [ "$OPT_HELP" = 1 ]; then
@@ -325,29 +473,21 @@ main() {
         return 1
     fi
 
+    # Steps run in this shell so what one exports (nvm, brew shellenv, PATH)
+    # reaches the next. errexit still applies inside a step; this trap turns a
+    # failure into "step failed" and a return of 75 into a clean stop.
+    # set -E makes command substitutions inherit this trap but not errexit, so
+    # guard on BASH_SUBSHELL: only a failure in the main shell is a step failure.
+    trap 'rc=$?; if [ "$BASH_SUBSHELL" != 0 ]; then :; elif [ "$rc" = 75 ]; then reboot_reminder "$ran"; exit 0; else echo "step failed: $step" >&2; reboot_reminder "$ran"; exit 1; fi' ERR
     for step in "${todo[@]}"; do
         if [ "$OPT_YES" != 1 ] && ! prompt "$step" "$("$(fname default "$step")")"; then
             continue
         fi
         log "$step"
-        set +e
-        (
-            set -e
-            "$(fname "do" "$step")"
-        )
-        rc=$?
-        set -e
-        if [ "$rc" -eq 75 ]; then
-            return 0
-        fi
-        if [ "$rc" -ne 0 ]; then
-            echo "step failed: $step" >&2
-            reboot_reminder "$ran"
-            return 1
-        fi
+        "$(fname "do" "$step")"
         ran="$ran $step"
     done
-    log "done. Sign in where needed: gh auth login, codex, pi /login, claude"
+    signin_list
     reboot_reminder "$ran"
 }
 

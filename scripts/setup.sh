@@ -349,17 +349,27 @@ do_gpu() {
     if have mokutil && mokutil --sb-state 2>/dev/null | grep -q 'SecureBoot enabled'; then
         echo "gpu: Secure Boot is on - the DKMS-built nvidia module will not load until Secure Boot is disabled or the dkms key is enrolled, see docs/gpu-passthrough.md" >&2
     fi
-    if ! grep -rqsE '(^|[[:space:]])non-free([[:space:]]|$)' /etc/apt/sources.list /etc/apt/sources.list.d/; then
-        sudo tee /etc/apt/sources.list.d/nonfree.sources >/dev/null <<'EOF'
+    # Drop in only the components no active source already carries, so apt
+    # never sees a target configured twice. The drop-in itself is excluded so
+    # a rerun recomputes the same set; a component after a # (the netinst
+    # cdrom line mentions contrib) does not count. -q exits 0 on a match even
+    # when a listed file is missing.
+    local c missing=""
+    for c in contrib non-free non-free-firmware; do
+        grep -rqsE "^[^#]*(^|[[:space:]])$c([[:space:]]|$)" --exclude=nonfree.sources \
+            /etc/apt/sources.list /etc/apt/sources.list.d/ || missing="$missing $c"
+    done
+    if [ -n "$missing" ]; then
+        sudo tee /etc/apt/sources.list.d/nonfree.sources >/dev/null <<EOF
 Types: deb
 URIs: http://deb.debian.org/debian
 Suites: trixie trixie-updates
-Components: contrib non-free non-free-firmware
+Components:$missing
 
 Types: deb
 URIs: http://security.debian.org/debian-security
 Suites: trixie-security
-Components: contrib non-free non-free-firmware
+Components:$missing
 EOF
     fi
     sudo apt-get update

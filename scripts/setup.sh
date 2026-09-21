@@ -178,6 +178,7 @@ do_brew() {
     local brew
     /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" </dev/tty
     if [ -x /opt/homebrew/bin/brew ]; then brew=/opt/homebrew/bin/brew; else brew=/usr/local/bin/brew; fi
+    [ -x "$brew" ]
     echo "eval \"\$($brew shellenv)\"" >>"$HOME/.zprofile"
     eval "$("$brew" shellenv)"
 }

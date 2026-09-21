@@ -48,17 +48,21 @@ if out="$(bash "$PVE_SETUP" --status 2>&1)"; then
 fi
 grep -q 'not a Proxmox VE host' <<<"$out" || fail "proxmox_setup.sh refused without saying why: $out"
 
-# --status only runs the checks. SETUP_UPDATED skips the self-update, so the
-# test never clones or re-execs.
-bash "$SETUP" --status >/dev/null || fail "--status exited nonzero"
-
-# A non-login shell lacks ~/.local/bin; --status must still find tools there.
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
+# Use macOS checks even on Ubuntu CI; platform detection deliberately rejects
+# non-Debian Linux hosts. This fixture still exercises argument parsing/main.
+{
+    grep -v '^main "\$@"$' "$SETUP"
+    printf '\ndetect_os() { OS=macos; }\nmain "$@"\n'
+} >"$tmp/setup.sh"
+bash "$tmp/setup.sh" --status >/dev/null || fail "--status exited nonzero"
+
+# A non-login shell lacks ~/.local/bin; --status must still find tools there.
 mkdir -p "$tmp/.local/bin"
 printf '#!/bin/sh\n' >"$tmp/.local/bin/herdr"
 chmod +x "$tmp/.local/bin/herdr"
-env -i HOME="$tmp" PATH=/usr/bin:/bin SETUP_UPDATED=1 bash "$SETUP" --status --only herdr |
+env -i HOME="$tmp" PATH=/usr/bin:/bin SETUP_UPDATED=1 bash "$tmp/setup.sh" --status --only herdr |
     grep -Eq '^herdr +done$' || fail "--status misses ~/.local/bin/herdr in a clean env"
 
 echo "ok: setup.sh and proxmox_setup.sh"

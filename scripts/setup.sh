@@ -350,8 +350,17 @@ do_gpu() {
         echo "gpu: Secure Boot is on - the DKMS-built nvidia module will not load until Secure Boot is disabled or the dkms key is enrolled, see docs/gpu-passthrough.md" >&2
     fi
     if ! grep -rqsE '(^|[[:space:]])non-free([[:space:]]|$)' /etc/apt/sources.list /etc/apt/sources.list.d/; then
-        sudo sed -i '/^Components:/{s/$/ /; s/ non-free-firmware / /g; s/ non-free / /g; s/ contrib / /g; s/ *$/ contrib non-free non-free-firmware/;}' \
-            /etc/apt/sources.list.d/debian.sources
+        sudo tee /etc/apt/sources.list.d/nonfree.sources >/dev/null <<'EOF'
+Types: deb
+URIs: http://deb.debian.org/debian
+Suites: trixie trixie-updates
+Components: contrib non-free non-free-firmware
+
+Types: deb
+URIs: http://security.debian.org/debian-security
+Suites: trixie-security
+Components: contrib non-free non-free-firmware
+EOF
     fi
     sudo apt-get update
     sudo apt-get install -y nvidia-driver firmware-misc-nonfree

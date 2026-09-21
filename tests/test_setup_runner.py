@@ -263,3 +263,59 @@ def test_cancellation_stops_without_starting_another_task():
     assert code == 130 and not results
     assert not any(name == "next" for name, _ in backend.calls)
     assert "Cancelled" in output
+
+
+def test_declining_manual_task_retains_its_diagnostic():
+    diagnostic = Result(
+        "ssh",
+        "manual",
+        "existing config is not hardened",
+        "Review sshd -T",
+        ["password authentication remains enabled"],
+    )
+    output = []
+    runner = Runner(
+        [Task("ssh", "")],
+        FakeBackend(probes={"ssh": diagnostic}),
+        confirm=lambda _: False,
+        emit=output.append,
+    )
+    assert runner.run() == 0
+    result = runner.results[0]
+    assert result.outcome == "skipped" and diagnostic.reason in result.reason
+    assert result.warnings == diagnostic.warnings and result.action == diagnostic.action
+    assert diagnostic.reason in output[0]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        None,
+        "broken JSON",
+        {"task": "wrong"},
+        dict(Result("directories", "satisfied").to_dict(), outcome=[]),
+    ],
+)
+def test_controller_reports_missing_or_malformed_worker_result(tmp_path, monkeypatch, payload):
+    import io
+    from pathlib import Path
+
+    from setup_core import backend as backend_module
+
+    class Process:
+        def __init__(self, args, **kwargs):
+            self.stdout = io.StringIO("ordinary diagnostic output is not a result\n")
+            if payload is not None:
+                Path(args[-1]).write_text(
+                    payload if isinstance(payload, str) else json.dumps(payload)
+                )
+
+        def wait(self):
+            return 0
+
+        def poll(self):
+            return 0
+
+    monkeypatch.setattr(backend_module.subprocess, "Popen", Process)
+    backend = Backend("debian", tmp_path, "fixture", environment(tmp_path, {}), {})
+    assert backend.call("directories", "probe").outcome == "failed"

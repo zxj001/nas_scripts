@@ -14,6 +14,10 @@ record = p.with_name(p.name + '.nas-setup-recovery')
 def regular(path):
     if path.is_symlink() or (path.exists() and not path.is_file()):
         raise SystemExit('refusing non-regular configuration/recovery file: ' + str(path))
+def sync_directory():
+    fd = os.open(p.parent, os.O_RDONLY)
+    try: os.fsync(fd)
+    finally: os.close(fd)
 def publish(path, content, mode, uid=None, gid=None, create=False):
     fd, name = tempfile.mkstemp(prefix='.' + path.name + '.', dir=path.parent)
     try:
@@ -22,6 +26,7 @@ def publish(path, content, mode, uid=None, gid=None, create=False):
             if uid is not None: os.fchown(f.fileno(), uid, gid)
         if create: os.link(name, path)  # Never replace a concurrent operator write.
         else: os.replace(name, path)
+        sync_directory()
     finally: pathlib.Path(name).unlink(missing_ok=True)
 def digest(content): return None if content is None else hashlib.sha256(content).hexdigest()
 regular(p); regular(record)
@@ -34,11 +39,11 @@ if saved:
     if digest(current) not in (saved['after'], digest(prior)):
         raise SystemExit('operator changed an interrupted config; preserve it and reconcile recovery manually')
     if op == 'commit':
-        record.unlink(); print(json.dumps({'changed': False})); raise SystemExit(0)
+        record.unlink(); sync_directory(); print(json.dumps({'changed': False})); raise SystemExit(0)
     # Reconcile an interrupted transaction before attempting its next write.
     if prior is None: p.unlink(missing_ok=True)
     else: publish(p, prior, saved['mode'], saved['uid'], saved['gid'])
-    record.unlink(); current = prior
+    record.unlink(); sync_directory(); current = prior
 if op in ('commit', 'rollback'):
     print(json.dumps({'changed': False})); raise SystemExit(0)
 if op == 'create' and current not in (None, data):
@@ -55,6 +60,7 @@ saved = {'before': None if current is None else base64.b64encode(current).decode
 fd = os.open(record, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
 with os.fdopen(fd, 'w') as f:
     json.dump(saved, f); f.flush(); os.fsync(f.fileno())
+sync_directory()
 if op == 'create' and p.exists():
     if p.read_bytes() != data: raise SystemExit('configuration changed before publication')
 else:

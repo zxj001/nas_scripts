@@ -70,13 +70,19 @@ class Runner:
                 )
         probe = self.backend.call(task, "probe")
         if probe.outcome != "pending":
-            if (
-                probe.outcome in {"manual", "deferred"}
-                and not self.readonly
-                and not self.yes
-                and not self.confirm(task)
-            ):
-                return Result(task.id, "skipped", "declined by the user")
+            if probe.outcome in {"manual", "deferred"} and not self.readonly and not self.yes:
+                self.emit(f"{task.id}: {probe.reason}")
+                if probe.action:
+                    self.emit("  Next: " + probe.action)
+                if not self.confirm(task):
+                    return Result(
+                        task.id,
+                        "skipped",
+                        "declined by the user; " + probe.reason,
+                        probe.action,
+                        probe.warnings,
+                        probe.unsafe,
+                    )
             return probe
         if self.readonly:
             return probe

@@ -22,6 +22,11 @@ def atomic_json(path, data):
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
     finally:
         Path(temporary).unlink(missing_ok=True)
 

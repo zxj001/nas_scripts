@@ -9,9 +9,14 @@ own node keys in that file do not count. Then, as root on the host:
 curl -fsSL https://raw.githubusercontent.com/zxj001/nas_scripts/main/scripts/proxmox_setup.sh | bash
 ```
 
+The remote wrapper requires the `setup-v1.0.0` release. Until it is published, run
+`bash scripts/proxmox_setup.sh` from a checkout. The shared runner preserves the
+Proxmox policy; real Proxmox VM validation remains a release gate. See
+[runner behavior and release prerequisites](setup-runner.md).
+
 It offers `ssh-keys` (paste your key), `ssh-harden`, `tailscale` and `subnet-router`, with
 the same `--status`, `--yes` and `--only a,b` flags as `setup-machine`. After `ssh-keys`, log
-in with the key from a new terminal when `ssh-harden` asks. Rerun the line to update. It
+in with the key from a new terminal, then rerun deferred `ssh-harden`. Updates are explicit. It
 refuses to run anywhere but a Proxmox VE host.
 
 `subnet-router` defaults to no at the prompt, but `--yes` runs every step that is not done,
@@ -22,7 +27,7 @@ curl -fsSL https://raw.githubusercontent.com/zxj001/nas_scripts/main/scripts/pro
   PVE_OPERATOR_KEY="ssh-ed25519 AAAA... you@client" bash -s -- --yes --only ssh-keys
 # log in once with that key from the client, then:
 curl -fsSL https://raw.githubusercontent.com/zxj001/nas_scripts/main/scripts/proxmox_setup.sh |
-  bash -s -- --yes --only ssh-harden,tailscale
+  bash -s -- --yes --only ssh-harden,tailscale --with-deps
 ```
 
 Host-side, on `pve1` itself (192.168.1.203, web UI :8006). The numbered steps cover a

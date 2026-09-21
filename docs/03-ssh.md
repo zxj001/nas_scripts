@@ -1,6 +1,6 @@
 # 3. SSH
 
-Automated by `setup-machine --only ssh,ssh-keys,ssh-harden`.
+Automated by `setup-machine --only ssh,ssh-keys,ssh-harden --with-deps`.
 
 SSH listens on the default port 22.
 

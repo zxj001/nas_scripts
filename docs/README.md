@@ -12,44 +12,47 @@ Proxmox guest.
 After the Debian install in [01-debian-install.md](01-debian-install.md), which is still
 manual (VM creation, the installer itself), one command does steps 2-7 on Debian 13 or macOS:
 
+Run from a checkout (Python 3.11+; the apply wrapper offers a runtime installation
+on supported machines when needed):
+
+```sh
+bash scripts/setup.sh
+bash scripts/setup.sh --status
+bash scripts/setup.sh --only tailscale --with-deps
 ```
+
+Each task probes current state, applies missing work, and verifies the result.
+Failures and warnings remain visible in the final summary; independent tasks continue.
+`--only` selects exactly the named tasks/groups. Add `--with-deps` to also select
+prerequisite providers, including curl and CA certificates on a fresh Debian install.
+`--yes` accepts selected changes but defers sign-ins and missing input.
+
+The `setup-command` task installs `~/.local/bin/setup-machine` with a complete local
+bundle, preserving any existing command. Reruns preserve user files and checkouts;
+updates are explicit. Existing SSH configuration that needs manual hardening is
+reported without replacing the file or stopping other work.
+
+```sh
+setup-machine --plan
+setup-machine --status
+setup-machine --only power-restore
+```
+
+Power recovery supports local IPMI and compatible Mac settings; ordinary desktops
+receive BIOS/UEFI instructions. See [power recovery](power-restore.md).
+For resume, outcomes, architecture, release/bootstrap prerequisites and testing, see
+[the setup runner](setup-runner.md) and [preservation audit](setup-safety.md).
+
+Remote wrappers download the pinned `setup-v1.0.0` bundle. Until that release is
+published, use a checkout. Once available:
+
+```sh
 curl -fsSL https://raw.githubusercontent.com/zxj001/nas_scripts/main/scripts/setup.sh | bash
 ```
 
-It clones this repo to `~/tools/nas_scripts` and links it as `~/.local/bin/setup-machine`.
-On a box without git (a fresh Debian 13 install) it does that as soon as the dev-tools
-step has installed git. Rerun it any time; steps already done are skipped:
-
-```
-setup-machine            # offer each step that is not done yet
-setup-machine --status   # just show what is done and what is left
-```
-
-On a minimal Debian install, install the download prerequisite first:
-
-```
-sudo apt-get update
-sudo apt-get install -y curl ca-certificates
-```
-
-When running a local copy of `scripts/setup.sh`, its download steps install these
-prerequisites themselves, including `--only tailscale`.
-
-`--status` does not update or clone the repository. Normal runs preserve modified
-checkouts, existing launchers, custom apt/SSH files, and nvm defaults. Conflicting
-apt configuration stops the affected step with the path to resolve; it is not replaced.
-Existing SSH configuration is checked through `sshd -T`: if it still needs hardening,
-setup reports that hardening was skipped and continues without replacing the file.
-See the [setup safety audit](setup-safety.md) for the step-by-step review and limits.
-
-For automatic startup after a power outage, run `setup-machine --only power-restore`.
-It configures supported local IPMI/macOS settings and provides BIOS/UEFI guidance
-for desktops without IPMI. `manual` means firmware setup remains unverified. See
-[power recovery](power-restore.md).
-
-It ends by listing the sign-ins it can't do for you (`gh auth login`, `codex`, `pi`,
-`claude`, and on macOS Tailscale.app: open it and sign in). The steps below are what the
-script does, for doing it by hand or fixing one step.
+A minimal Debian install needs `curl` and `ca-certificates` to run that download
+command. Local checkout setup installs them through its dependency provider.
+The steps below describe the corresponding manual operations.
 
 | # | Step | Doc |
 |---|------|-----|

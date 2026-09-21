@@ -3,7 +3,7 @@
 set -euo pipefail
 setup_main() {
     local candidate
-    local profile='auto' readonly=0 yes=0 arg py='' root='' source_path=''
+    local profile='@PROFILE@' readonly=0 yes=0 arg py='' root='' source_path=''
     for arg in "$@"; do
         case "$arg" in --status|--plan|--help|-h) readonly=1 ;; --yes) yes=1 ;; esac
     done
@@ -59,7 +59,7 @@ setup_main() {
     local temporary url rc=0
     temporary="$(mktemp -d)"
     trap 'rm -rf "$temporary"' EXIT
-    url='https://github.com/zxj001/nas_scripts/releases/download/setup-v1.0.0'
+    url='https://github.com/zxj001/nas_scripts/releases/download/setup-v@VERSION@'
     # Fetch complete, version-matched assets; never stream installers into a shell.
     "$py" -I -c 'import pathlib,sys,urllib.request
 base,directory=sys.argv[1:]

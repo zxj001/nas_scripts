@@ -2,6 +2,9 @@
 # Checks on scripts/setup.sh. Run from anywhere: tests/test_setup.sh
 set -euo pipefail
 
+# Never let anything below reach self_update: no clone, pull or exec.
+export SETUP_UPDATED=1
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SETUP="$ROOT/scripts/setup.sh"
 fail() {
@@ -18,10 +21,11 @@ else
 fi
 
 # Every registered step needs its check_/do_/default_ trio. Load the script's
-# definitions (everything but the trailing `main "$@"`) and ask bash for the
+# definitions (everything but the `main "$@"` call) and ask bash for the
 # functions it actually defined.
+grep -q '^main "\$@"$' "$SETUP" || fail "no main \"\$@\" call found in $SETUP"
 STEPS=()
-eval "$(sed '$d' "$SETUP")"
+eval "$(grep -v '^main "\$@"$' "$SETUP")"
 [ "${#STEPS[@]}" -gt 0 ] || fail "no STEPS registry found in $SETUP"
 for step in "${STEPS[@]}"; do
     for prefix in check "do" default; do
@@ -32,6 +36,6 @@ done
 
 # --status only runs the checks. SETUP_UPDATED skips the self-update, so the
 # test never clones or re-execs.
-SETUP_UPDATED=1 bash "$SETUP" --status >/dev/null || fail "--status exited nonzero"
+bash "$SETUP" --status >/dev/null || fail "--status exited nonzero"
 
 echo "ok: ${#STEPS[@]} steps"

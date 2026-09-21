@@ -338,7 +338,7 @@ assert_repos_rerun() {
     [ -z "$(calls)" ] || fail "completed repos step reran"
     HARNESS_CALL=do_repos run >/dev/null
     [ "$(snapshot)" = "$before" ] || fail "repos rerun changed source content"
-    [ "$(status_of repos)" = done ] || fail "repos rerun did not remain done"
+    [ "$(status_of repos)" = "done" ] || fail "repos rerun did not remain done"
 }
 
 fresh_apt trixie
@@ -355,7 +355,7 @@ Enabled:
  yes
 EOF
 cp "$A/proxmox.sources" "$F/continued-public"
-[ "$(status_of repos)" = done ] || fail "continued no-subscription fields not recognised"
+[ "$(status_of repos)" = "done" ] || fail "continued no-subscription fields not recognised"
 cat >"$A/pve-enterprise.sources" <<'EOF'
 # installer source
 Types: deb
@@ -385,7 +385,7 @@ EOF
 cmp -s "$F/want" "$A/pve-enterprise.sources" || fail "continued enterprise fields not preserved or disabled"
 cmp -s "$F/continued-public" "$A/proxmox.sources" || fail "continued public source changed"
 [ ! -e "$A/pve-no-subscription.sources" ] || fail "continued public source duplicated"
-[ "$(status_of repos)" = done ] || fail "continued enterprise source remains enabled"
+[ "$(status_of repos)" = "done" ] || fail "continued enterprise source remains enabled"
 assert_repos_rerun
 
 for layout in sources list; do
@@ -458,7 +458,7 @@ Components: no-subscription
 Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
 EOF
     cmp -s "$F/want" "$A/pve-no-subscription.sources" || fail "historical Ceph release selected in $layout layout"
-    [ "$(status_of repos)" = done ] || fail "Ceph $layout migration incomplete"
+    [ "$(status_of repos)" = "done" ] || fail "Ceph $layout migration incomplete"
     assert_repos_rerun
 done
 
@@ -477,7 +477,7 @@ EOF
 [ "$(status_of repos)" = todo ] || fail "disabled unterminated source counted as done"
 run --yes --only repos >/dev/null
 cmp -s "$F/want" "$A/pve-no-subscription.sources" || fail "appended stanza not separated from unterminated content"
-[ "$(status_of repos)" = done ] || fail "appended stanza remains disabled"
+[ "$(status_of repos)" = "done" ] || fail "appended stanza remains disabled"
 assert_repos_rerun
 
 for layout in sources list; do
@@ -579,7 +579,7 @@ cp "$A/unrelated.list" "$F/unrelated-list"
 cp "$A/unrelated.sources" "$F/unrelated-sources"
 [ "$(status_of repos)" = todo ] || fail "inline component comment counted as source"
 printf 'deb [signed-by=/usr/share/keyrings/proxmox-archive-keyring.gpg] http://download.proxmox.com/debian/pve bookworm pve-no-subscription\n' >"$A/public.list"
-[ "$(status_of repos)" = done ] || fail "enterprise comment counted as enabled source"
+[ "$(status_of repos)" = "done" ] || fail "enterprise comment counted as enabled source"
 printf 'deb [signed-by=/keyring] https://enterprise.proxmox.com/debian/pve bookworm pve-enterprise # keep note\n' >"$A/pve-enterprise.list"
 cat "$F/unrelated-list" >>"$A/pve-enterprise.list"
 run --yes --only repos >/dev/null
@@ -726,7 +726,7 @@ EOF
         cp "$A/public.$layout" "$F/public-before"
         cp "$A/ceph.$layout" "$F/ceph-before"
         if [ "$ceph_state" = binary-and-source ]; then
-            [ "$(status_of repos)" = done ] || fail "binary and source types not recognised: $layout"
+            [ "$(status_of repos)" = "done" ] || fail "binary and source types not recognised: $layout"
         else
             [ "$(status_of repos)" = todo ] || fail "missing Ceph binary counted as done: $layout $ceph_state"
             run --yes --only repos >/dev/null
@@ -841,7 +841,7 @@ Suites: bookworm
 Components: no-subscription
 Enabled: false
 EOF
-[ "$(status_of repos)" = done ] || fail "compatible continued signing or inactive entry rejected"
+[ "$(status_of repos)" = "done" ] || fail "compatible continued signing or inactive entry rejected"
 assert_repos_rerun
 
 fresh_apt trixie
@@ -857,7 +857,7 @@ EOF
 printf 'deb-src [signed-by=%s] http://download.proxmox.com/debian/pve bookworm pve-no-subscription\n' "$LEGACY_KEY" >"$A/admin.list"
 rm -rf "$F/apt-before"
 cp -R "$F/etc/apt" "$F/apt-before"
-[ "$(status_of repos)" = done ] || fail "retained Bookworm signing marked incomplete on Trixie"
+[ "$(status_of repos)" = "done" ] || fail "retained Bookworm signing marked incomplete on Trixie"
 assert_repos_rerun
 diff -r "$F/apt-before" "$F/etc/apt" || fail "upgrade changed retained Bookworm or administrator sources"
 
@@ -892,7 +892,7 @@ Components: pve-no-subscription
 Signed-By: $mixed_key
 EOF
     if [ "$mixed_key" = "$ARCHIVE_KEY" ]; then
-        [ "$(status_of repos)" = done ] || fail "compatible mixed-suite stanza rejected"
+        [ "$(status_of repos)" = "done" ] || fail "compatible mixed-suite stanza rejected"
         assert_repos_rerun
         continue
     fi

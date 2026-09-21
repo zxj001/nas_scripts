@@ -4,6 +4,8 @@ Automated by `setup-machine --only ssh,ssh-keys,ssh-harden`.
 
 SSH listens on the default port 22.
 
+On the Proxmox host itself, see [pve-host.md](pve-host.md): root must keep key login there.
+
 ## Server
 
 The installer's "SSH server" option usually handles this already. If not:

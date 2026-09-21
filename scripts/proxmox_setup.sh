@@ -77,10 +77,26 @@ require_pve() {
 # Debian codename of the running system (trixie on PVE 9, bookworm on PVE 8).
 codename() { sed -n 's/^VERSION_CODENAME=//p' "$OS_RELEASE" | tr -d '"'; }
 
+repo_keyring() {
+    local key
+    for key in /usr/share/keyrings/proxmox-archive-keyring.gpg /etc/apt/trusted.gpg.d/proxmox-release-bookworm.gpg; do
+        if [ "$key" = /etc/apt/trusted.gpg.d/proxmox-release-bookworm.gpg ] && [ "$(codename)" != bookworm ]; then
+            continue
+        fi
+        if [ -f "$P$key" ] && [ -s "$P$key" ] && runuser -u _apt -- test -r "$P$key"; then
+            printf '%s\n' "$key"
+            return 0
+        fi
+    done
+    echo "no eligible Proxmox keyring is nonempty and readable by _apt" >&2
+    return 1
+}
+
 source_file() {
     local mode="$1" file="$2"
     [ -f "$file" ] || return 0
-    awk -v mode="$mode" -v deb822="${file##*.}" '
+    awk -v mode="$mode" -v deb822="${file##*.}" -v key="${3:-}" \
+        -v managed_file="$([ "$file" = "$APT_DIR/pve-no-subscription.sources" ] && echo yes)" '
         function enterprise(uris,    items, count, i) {
             count = split(uris, items, " ")
             for (i = 1; i <= count; i++)
@@ -91,23 +107,35 @@ source_file() {
             if (k == "uris") u = v
             else if (k == "suites") s = v
             else if (k == "components") c = v
+            else if (k == "signed-by") signed = v
             else if (k == "enabled") en = (tolower(v) !~ /^(no|false|off|0|disable)/)
         }
-        function flush(    i, skip, ent) {
+        function flush(    i, skip, ent, managed, repair, wrote) {
             field()
             ent = enterprise(u)
+            managed = (managed_file == "yes" &&
+                ((u ~ /^http:\/\/download\.proxmox\.com\/debian\/pve\/?$/ && c == "pve-no-subscription") ||
+                 (u ~ /^http:\/\/download\.proxmox\.com\/debian\/ceph-[a-z]+\/?$/ && c == "no-subscription")))
+            repair = (mode == "keyring" && en && managed && signed != key)
             if (mode == "read") {
-                if (u != "") print u "|" s "|" c "|" en "|" ent
+                if (u != "") print u "|" s "|" c "|" en "|" ent "|" signed "|" managed
             } else {
                 skip = 0
                 for (i = 1; i <= n; i++) {
                     if (buf[i] ~ /^[[:space:]]*#/) { print buf[i]; continue }
-                    if (buf[i] !~ /^[[:space:]]/) skip = (ent && en && tolower(buf[i]) ~ /^enabled[[:space:]]*:/)
+                    if (buf[i] !~ /^[[:space:]]/) {
+                        skip = (mode == "disable" && ent && en && tolower(buf[i]) ~ /^enabled[[:space:]]*:/)
+                        if (repair && tolower(buf[i]) ~ /^signed-by[[:space:]]*:/) {
+                            skip = 1
+                            if (!wrote++) print "Signed-By: " key
+                        }
+                    }
                     if (!skip) print buf[i]
                 }
-                if (ent && en) print "Enabled: false"
+                if (mode == "disable" && ent && en) print "Enabled: false"
+                if (repair && !wrote) print "Signed-By: " key
             }
-            u = s = c = k = v = ""; en = 1; n = 0
+            u = s = c = k = v = signed = ""; en = 1; n = 0
         }
         BEGIN { en = 1 }
         deb822 != "sources" {
@@ -183,18 +211,25 @@ has_source() {
         END { exit !found }'
 }
 
+managed_keyring_matches() {
+    source_file read "$APT_DIR/pve-no-subscription.sources" |
+        awk -F'|' -v key="$1" '$4 && $7 && $6 != key { bad = 1 } END { exit bad }'
+}
+
 # A fresh install enables the subscription-only enterprise repos, so every
 # apt update fails with 401 until they are off. Done when none is enabled and
 # pve-no-subscription is, for the running suite.
 check_repos() {
-    local srcs
+    local srcs key
+    key="$(repo_keyring)" || return 1
+    managed_keyring_matches "$key" || return 1
     srcs="$(enabled_sources)"
     ! has_enterprise <<<"$srcs" &&
         has_source http://download.proxmox.com/debian/pve "$(codename)" pve-no-subscription
 }
 default_repos() { echo yes; }
 do_repos() {
-    local suite f tmp ceph releases new=""
+    local suite f tmp ceph releases key new=""
     suite="$(codename)"
     if [ -z "$suite" ]; then
         echo "no VERSION_CODENAME in $OS_RELEASE" >&2
@@ -206,7 +241,15 @@ do_repos() {
             return 1
         fi
     done
+    key="$(repo_keyring)" || return 1
     releases="$(ceph_releases)"
+    if ! managed_keyring_matches "$key"; then
+        f="$APT_DIR/pve-no-subscription.sources"
+        tmp="$(mktemp)"
+        source_file keyring "$f" "$key" >"$tmp"
+        cat "$tmp" >"$f"
+        rm -f "$tmp"
+    fi
     for f in "$APT_DIR"/*.sources "$APT_DIR"/*.list; do
         [ "$f" != "$APT_DIR/debian.sources" ] || continue
         if source_file read "$f" | has_enterprise; then
@@ -223,7 +266,7 @@ do_repos() {
 URIs: http://download.proxmox.com/debian/pve
 Suites: $suite
 Components: pve-no-subscription
-Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
+Signed-By: $key
 "
     fi
     for ceph in $releases; do
@@ -233,7 +276,7 @@ Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
 URIs: http://download.proxmox.com/debian/ceph-$ceph
 Suites: $suite
 Components: no-subscription
-Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
+Signed-By: $key
 "
         fi
     done

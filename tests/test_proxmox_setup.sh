@@ -60,6 +60,10 @@ tailscale() {
             ;;
     esac
 }
+runuser() {
+    [ "$#" = 6 ] && [ "$1 $2 $3 $4 $5" = "-u _apt -- test -r" ] || return 99
+    [ "${KEY_DENY:-}" != all ] && [ "${KEY_DENY:-}" != "$6" ] && [ -r "$6" ]
+}
 apt-get() {
     echo "apt-get $*" >>"$F/calls"
     return "${APT_RC:-0}"
@@ -169,7 +173,9 @@ mkdir -p "$A"
 snapshot() { cat "$F/etc/os-release" "$F/etc/apt/sources.list" "$A"/* 2>/dev/null | cksum; }
 fresh_apt() {
     rm -rf "$A" "$F/calls"
-    mkdir -p "$A"
+    mkdir -p "$A" "$F/usr/share/keyrings" "$F/etc/apt/trusted.gpg.d"
+    rm -f "$F/usr/share/keyrings/proxmox-archive-keyring.gpg" "$F/etc/apt/trusted.gpg.d/proxmox-release-bookworm.gpg"
+    printf 'fixture archive key\n' >"$F/usr/share/keyrings/proxmox-archive-keyring.gpg"
     printf 'PRETTY_NAME="Debian GNU/Linux"\nVERSION_CODENAME=%s\n' "$1" >"$F/etc/os-release"
     printf 'Types: deb\nURIs: http://deb.debian.org/debian/\nSuites: %s %s-updates\nComponents: main contrib\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\n' \
         "$1" "$1" >"$A/debian.sources"
@@ -530,5 +536,96 @@ printf '# deb [signed-by=/keyring] https://enterprise.proxmox.com/debian/pve boo
 cat "$F/unrelated-list" >>"$F/want"
 cmp -s "$F/want" "$A/pve-enterprise.list" || fail "enterprise URI not disabled with options and inline comment"
 assert_repos_rerun
+
+ARCHIVE_KEY=/usr/share/keyrings/proxmox-archive-keyring.gpg
+LEGACY_KEY=/etc/apt/trusted.gpg.d/proxmox-release-bookworm.gpg
+keyring_enterprise_fixture() {
+    printf 'deb https://enterprise.proxmox.com/debian/pve %s pve-enterprise\n' "$1" >"$A/pve-enterprise.list"
+    printf 'deb https://enterprise.proxmox.com/debian/ceph-reef %s enterprise\n' "$1" >"$A/ceph.list"
+}
+expected_keyring_sources() {
+    cat <<EOF
+Types: deb
+URIs: http://download.proxmox.com/debian/pve
+Suites: bookworm
+Components: pve-no-subscription
+Signed-By: $1
+
+Types: deb
+URIs: http://download.proxmox.com/debian/ceph-reef
+Suites: bookworm
+Components: no-subscription
+Signed-By: $1
+EOF
+}
+
+for key_case in prefer-archive legacy-only unreadable-archive; do
+    fresh_apt bookworm
+    printf 'fixture legacy key\n' >"$F$LEGACY_KEY"
+    keyring_enterprise_fixture bookworm
+    selected="$ARCHIVE_KEY"
+    case "$key_case" in
+        legacy-only) rm "$F$ARCHIVE_KEY"; selected="$LEGACY_KEY" ;;
+        unreadable-archive) export KEY_DENY="$F$ARCHIVE_KEY"; selected="$LEGACY_KEY" ;;
+    esac
+    run --yes --only repos >/dev/null
+    expected_keyring_sources "$selected" >"$F/want"
+    cmp -s "$F/want" "$A/pve-no-subscription.sources" || fail "wrong generated Signed-By for $key_case"
+    calls | grep -qx 'apt-get update' || fail "apt not called for $key_case"
+    assert_repos_rerun
+    unset KEY_DENY
+done
+
+for key_case in legacy-on-trixie missing empty unreadable; do
+    fresh_apt bookworm
+    if [ "$key_case" = legacy-on-trixie ]; then fresh_apt trixie; fi
+    keyring_enterprise_fixture "$(sed -n 's/^VERSION_CODENAME=//p' "$F/etc/os-release")"
+    case "$key_case" in
+        legacy-on-trixie) rm "$F$ARCHIVE_KEY"; printf 'legacy key\n' >"$F$LEGACY_KEY" ;;
+        missing) rm "$F$ARCHIVE_KEY" ;;
+        empty) : >"$F$ARCHIVE_KEY"; : >"$F$LEGACY_KEY" ;;
+        unreadable) printf 'legacy key\n' >"$F$LEGACY_KEY"; export KEY_DENY=all ;;
+    esac
+    before="$(snapshot)"
+    if run --yes --only repos >"$F/output" 2>&1; then fail "unusable key accepted: $key_case"; fi
+    grep -q 'no eligible Proxmox keyring' "$F/output" || fail "key refusal not explained"
+    [ "$(snapshot)" = "$before" ] || fail "sources changed before key refusal: $key_case"
+    [ -z "$(calls)" ] || fail "apt called without usable key: $key_case"
+    unset KEY_DENY
+done
+
+fresh_apt bookworm
+rm "$F$ARCHIVE_KEY"
+printf 'legacy key\n' >"$F$LEGACY_KEY"
+expected_keyring_sources "$ARCHIVE_KEY" >"$A/pve-no-subscription.sources"
+cat >>"$A/pve-no-subscription.sources" <<'EOF'
+
+# unrelated stanza retains its own trust
+Types: deb
+URIs: https://mirror.example.org/other
+Suites: bookworm
+Components: main
+Signed-By: /custom/keyring.gpg
+EOF
+cp "$A/pve-no-subscription.sources" "$F/managed-before"
+[ "$(status_of repos)" = todo ] || fail "managed missing Signed-By key counted as done"
+run --yes --only repos >/dev/null
+sed "s|$ARCHIVE_KEY|$LEGACY_KEY|g" "$F/managed-before" >"$F/want"
+cmp -s "$F/want" "$A/pve-no-subscription.sources" || fail "managed stanzas not repaired in place"
+calls | grep -qx 'apt-get update' || fail "managed repair skipped apt"
+assert_repos_rerun
+printf 'archive key\n' >"$F$ARCHIVE_KEY"
+[ "$(status_of repos)" = todo ] || fail "managed legacy key preferred over installed archive key"
+run --yes --only repos >/dev/null
+cmp -s "$F/managed-before" "$A/pve-no-subscription.sources" || fail "managed stanzas not updated to preferred archive key"
+assert_repos_rerun
+export KEY_DENY=all
+[ "$(status_of repos 2>/dev/null)" = todo ] || fail "managed unreadable key counted as done"
+before="$(snapshot)"
+rm -f "$F/calls"
+if run --yes --only repos >/dev/null 2>&1; then fail "managed unreadable key accepted"; fi
+[ "$(snapshot)" = "$before" ] || fail "managed sources changed with no usable key"
+[ -z "$(calls)" ] || fail "managed unusable key invoked apt"
+unset KEY_DENY
 
 echo "ok: proxmox_setup.sh behaviour"

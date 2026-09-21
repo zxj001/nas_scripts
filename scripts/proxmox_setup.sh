@@ -95,7 +95,7 @@ repo_keyring() {
 source_file() {
     local mode="$1" file="$2"
     [ -f "$file" ] || return 0
-    awk -v mode="$mode" -v deb822="${file##*.}" -v key="${3:-}" \
+    awk -v mode="$mode" -v deb822="${file##*.}" -v key="${3:-}" -v suite="$(codename)" \
         -v managed_file="$([ "$file" = "$APT_DIR/pve-no-subscription.sources" ] && echo yes)" '
         function enterprise(uris,    items, count, i) {
             count = split(uris, items, " ")
@@ -111,13 +111,18 @@ source_file() {
             else if (k == "signed-by") signed = v
             else if (k == "enabled") en = (tolower(v) !~ /^(no|false|off|0|disable)/)
         }
-        function flush(    i, skip, ent, managed, repair, wrote) {
+        function flush(    i, skip, ent, managed, repair, wrote, suites, current, other) {
             field()
             ent = enterprise(u)
             managed = (managed_file == "yes" &&
                 ((u ~ /^http:\/\/download\.proxmox\.com\/debian\/pve\/?$/ && c == "pve-no-subscription") ||
                  (u ~ /^http:\/\/download\.proxmox\.com\/debian\/ceph-[a-z]+\/?$/ && c == "no-subscription")))
-            repair = (mode == "keyring" && en && managed && signed != key)
+            split(s, suites, " "); current = other = 0
+            for (i in suites) {
+                if (suites[i] == suite) current = 1
+                else other = 1
+            }
+            repair = (mode == "keyring" && en && managed && current && !other && signed != key)
             if (mode == "read") {
                 if (u != "") print u "|" s "|" c "|" en "|" ent "|" signed "|" managed "|" types "|" FILENAME
             } else {
@@ -225,9 +230,17 @@ has_source() {
 signing_compatible() {
     all_sources | awk -F'|' -v key="$1" -v suite="$(codename)" '
         $4 && $8 ~ /(^|[[:space:]])deb(-src)?([[:space:]]|$)/ {
-            split($2, suites, " "); current = 0
-            for (j in suites) if (suites[j] == suite) current = 1
+            split($2, suites, " "); current = other = 0
+            for (j in suites) {
+                if (suites[j] == suite) current = 1
+                else other = 1
+            }
             if (!current) next
+            if ($7 && other && $6 != key) {
+                print "cannot repair Signed-By in mixed-suite managed stanza in " $9 > "/dev/stderr"
+                bad = 1
+                next
+            }
             count = split($6, keys, " ")
             if (count == 1 && keys[1] == key) next
             if ($7 && count == 1 &&
@@ -245,7 +258,12 @@ signing_compatible() {
 
 managed_keyring_matches() {
     source_file read "$APT_DIR/pve-no-subscription.sources" |
-        awk -F'|' -v key="$1" '$4 && $7 && $6 != key { bad = 1 } END { exit bad }'
+        awk -F'|' -v key="$1" -v suite="$(codename)" '
+            $4 && $7 && $6 != key {
+                split($2, suites, " ")
+                for (i in suites) if (suites[i] == suite) bad = 1
+            }
+            END { exit bad }'
 }
 
 # A fresh install enables the subscription-only enterprise repos, so every

@@ -789,4 +789,69 @@ EOF
 [ "$(status_of repos)" = done ] || fail "compatible continued signing or inactive entry rejected"
 assert_repos_rerun
 
+fresh_apt trixie
+expected_keyring_sources "$LEGACY_KEY" >"$A/pve-no-subscription.sources"
+cat >>"$A/pve-no-subscription.sources" <<'EOF'
+
+Types: deb
+URIs: http://download.proxmox.com/debian/pve
+Suites: trixie
+Components: pve-no-subscription
+Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
+EOF
+printf 'deb-src [signed-by=%s] http://download.proxmox.com/debian/pve bookworm pve-no-subscription\n' "$LEGACY_KEY" >"$A/admin.list"
+rm -rf "$F/apt-before"
+cp -R "$F/etc/apt" "$F/apt-before"
+[ "$(status_of repos)" = done ] || fail "retained Bookworm signing marked incomplete on Trixie"
+assert_repos_rerun
+diff -r "$F/apt-before" "$F/etc/apt" || fail "upgrade changed retained Bookworm or administrator sources"
+
+fresh_apt bookworm
+rm "$F$ARCHIVE_KEY"
+printf 'legacy key\n' >"$F$LEGACY_KEY"
+expected_keyring_sources "$ARCHIVE_KEY" >"$A/pve-no-subscription.sources"
+cat >"$F/other-suite" <<'EOF'
+
+# preserve this old release
+Types: deb
+URIs: http://download.proxmox.com/debian/pve
+Suites: bullseye
+Components: pve-no-subscription
+Signed-By: /custom/bullseye-keyring.gpg
+EOF
+cat "$F/other-suite" >>"$A/pve-no-subscription.sources"
+expected_keyring_sources "$LEGACY_KEY" >"$F/want"
+cat "$F/other-suite" >>"$F/want"
+run --yes --only repos >/dev/null
+cmp -s "$F/want" "$A/pve-no-subscription.sources" || fail "running-suite repair changed other-suite stanza"
+assert_repos_rerun
+
+for mixed_key in "$LEGACY_KEY" "$ARCHIVE_KEY"; do
+    fresh_apt trixie
+    cat >"$A/pve-no-subscription.sources" <<EOF
+Types: deb
+URIs: http://download.proxmox.com/debian/pve
+Suites: bookworm
+ trixie
+Components: pve-no-subscription
+Signed-By: $mixed_key
+EOF
+    if [ "$mixed_key" = "$ARCHIVE_KEY" ]; then
+        [ "$(status_of repos)" = done ] || fail "compatible mixed-suite stanza rejected"
+        assert_repos_rerun
+        continue
+    fi
+    [ "$(status_of repos 2>/dev/null)" = todo ] || fail "mixed-suite repair counted as done"
+    keyring_enterprise_fixture trixie
+    rm -rf "$F/apt-before"
+    cp -R "$F/etc/apt" "$F/apt-before"
+    if run --yes --only repos >"$F/output" 2>&1; then fail "unsafe mixed-suite repair accepted"; fi
+    grep -q 'cannot repair Signed-By in mixed-suite managed stanza' "$F/output" || fail "mixed-suite refusal not explained"
+    diff -r "$F/apt-before" "$F/etc/apt" || fail "mixed-suite refusal changed sources"
+    [ -z "$(calls)" ] || fail "mixed-suite refusal invoked apt"
+    if HARNESS_CALL=do_repos run >/dev/null 2>&1; then fail "direct call accepted mixed-suite repair"; fi
+    diff -r "$F/apt-before" "$F/etc/apt" || fail "direct mixed-suite refusal changed sources"
+    [ -z "$(calls)" ] || fail "direct mixed-suite refusal invoked apt"
+done
+
 echo "ok: proxmox_setup.sh behaviour"

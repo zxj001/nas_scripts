@@ -76,7 +76,9 @@ The step prefers the installed `/usr/share/keyrings/proxmox-archive-keyring.gpg`
 On Bookworm only, it can fall back to the installed
 `/etc/apt/trusted.gpg.d/proxmox-release-bookworm.gpg`. The selected keyring must be
 nonempty and readable by `_apt`; otherwise the step refuses before changing sources.
-It downloads no keys and repairs the `Signed-By` fields of its managed stanzas in place.
+It downloads no keys and repairs the `Signed-By` fields of its managed stanzas for
+the running suite in place. Other-suite entries stay unchanged; a mixed-suite stanza
+that needs keyring repair causes an unchanged refusal.
 If an existing enabled `deb` or `deb-src` entry for the same public URI and suite
 has missing or conflicting `Signed-By` settings, the step refuses unchanged. Resolve
 those administrator settings explicitly before rerunning; the step does not rewrite them.

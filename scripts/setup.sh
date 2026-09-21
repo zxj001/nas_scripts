@@ -346,8 +346,11 @@ check_gpu() {
 }
 default_gpu() { debian_only; }
 do_gpu() {
-    if ! grep -rqs non-free-firmware /etc/apt/sources.list /etc/apt/sources.list.d/; then
-        sudo sed -i 's/^Components: main$/Components: main contrib non-free non-free-firmware/' \
+    if have mokutil && mokutil --sb-state 2>/dev/null | grep -q 'SecureBoot enabled'; then
+        echo "gpu: Secure Boot is on - the DKMS-built nvidia module is unsigned and will not load until Secure Boot is disabled on the VM's EFI disk, see docs/gpu-passthrough.md" >&2
+    fi
+    if ! grep -rqsE '(^|[[:space:]])non-free([[:space:]]|$)' /etc/apt/sources.list /etc/apt/sources.list.d/; then
+        sudo sed -i '/^Components:/{s/$/ /; s/ non-free-firmware / /g; s/ non-free / /g; s/ contrib / /g; s/ *$/ contrib non-free non-free-firmware/;}' \
             /etc/apt/sources.list.d/debian.sources
     fi
     sudo apt-get update

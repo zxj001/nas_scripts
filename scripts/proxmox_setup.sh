@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# proxmox_setup - SSH keys, SSH hardening and Tailscale on a Proxmox VE host,
+# proxmox_setup - apt repositories, SSH keys, SSH hardening and Tailscale on a
+# Proxmox VE host,
 # the way docs/pve-host.md describes. The host-side analogue of setup.sh.
 #
 #   curl -fsSL https://raw.githubusercontent.com/zxj001/nas_scripts/main/scripts/proxmox_setup.sh | bash
@@ -21,6 +22,8 @@ AUTH_KEYS="$P/root/.ssh/authorized_keys"
 OPERATOR_FPS="$P/root/.ssh/operator-keys"
 SSHD_DROPIN="$P/etc/ssh/sshd_config.d/99-local.conf"
 SYSCTL_FILE="$P/etc/sysctl.d/99-tailscale.conf"
+APT_DIR="$P/etc/apt/sources.list.d"
+OS_RELEASE="$P/etc/os-release"
 
 # Ordered step registry, same contract as setup.sh. Every name here needs
 # three functions, with "-" replaced by "_":
@@ -33,7 +36,7 @@ SYSCTL_FILE="$P/etc/sysctl.d/99-tailscale.conf"
 #
 # Nothing else belongs here: no upgrade, guest agent, sleep or dev tools on the
 # hypervisor. Proxmox manages its own packages.
-STEPS=(ssh-keys ssh-harden tailscale subnet-router)
+STEPS=(repos ssh-keys ssh-harden tailscale subnet-router)
 
 usage() {
     cat <<'EOF'
@@ -70,6 +73,132 @@ require_pve() {
 }
 
 # --- steps ------------------------------------------------------------------
+
+# Debian codename of the running system (trixie on PVE 9, bookworm on PVE 8).
+codename() { sed -n 's/^VERSION_CODENAME=//p' "$OS_RELEASE" | tr -d '"'; }
+
+# Every enabled apt source in sources.list.d, one "uris|suites|components"
+# line each, from deb822 .sources stanzas and one-line .list entries.
+# ponytail: sources.list itself is not read; nothing PVE adds goes there.
+enabled_sources() {
+    local f
+    for f in "$APT_DIR"/*.sources; do
+        [ -f "$f" ] || continue
+        awk '
+            function flush() { if (u != "" && en) print u "|" s "|" c; u = s = c = ""; en = 1 }
+            BEGIN { en = 1 }
+            /^[[:space:]]*#/ { next }
+            /^[[:space:]]*$/ { flush(); next }
+            {
+                k = tolower($0); sub(/[[:space:]]*:.*/, "", k)
+                v = $0; sub(/^[^:]*:[[:space:]]*/, "", v)
+                if (k == "uris") u = v
+                else if (k == "suites") s = v
+                else if (k == "components") c = v
+                else if (k == "enabled") en = (tolower(v) !~ /^(no|false|off|0|disable)/)
+            }
+            END { flush() }' "$f"
+    done
+    for f in "$APT_DIR"/*.list; do
+        [ -f "$f" ] || continue
+        awk '/^[[:space:]]*deb(-src)?[[:space:]]/ {
+                 sub(/\[[^]]*\][[:space:]]*/, "")
+                 c = ""; for (i = 4; i <= NF; i++) c = c (c == "" ? "" : " ") $i
+                 print $2 "|" $3 "|" c
+             }' "$f"
+    done
+}
+
+# Is an enabled source for $1 (URI) with suite $2 and component $3 there?
+has_source() {
+    enabled_sources | awk -F'|' -v u="$1" -v s="$2" -v c="$3" '
+        { n = split($1, us, " "); split($2, ss, " "); split($3, cs, " ")
+          hu = hs = hc = 0
+          for (i = 1; i <= n; i++) { x = us[i]; sub(/\/$/, "", x); if (x == u) hu = 1 }
+          for (i in ss) if (ss[i] == s) hs = 1
+          for (i in cs) if (cs[i] == c) hc = 1
+          if (hu && hs && hc) found = 1 }
+        END { exit !found }'
+}
+
+# A fresh install enables the subscription-only enterprise repos, so every
+# apt update fails with 401 until they are off. Done when none is enabled and
+# pve-no-subscription is, for the running suite.
+check_repos() {
+    # Captured first: under pipefail an early-exiting grep -q can SIGPIPE the
+    # producer, and a negated failed pipeline would read as done.
+    local srcs
+    srcs="$(enabled_sources)"
+    ! grep -q 'enterprise\.proxmox\.com' <<<"$srcs" &&
+        has_source http://download.proxmox.com/debian/pve "$(codename)" pve-no-subscription
+}
+default_repos() { echo yes; }
+do_repos() {
+    local suite f tmp ceph new=""
+    suite="$(codename)"
+    if [ -z "$suite" ]; then
+        echo "no VERSION_CODENAME in $OS_RELEASE" >&2
+        return 1
+    fi
+    # The Ceph release (squid, reef, ...) as the enterprise entry names it.
+    ceph="$(cat "$APT_DIR"/*.sources "$APT_DIR"/*.list 2>/dev/null |
+        grep -oE 'enterprise\.proxmox\.com/debian/ceph-[a-z]+' | head -n1 | sed 's/.*ceph-//' || true)"
+    # Disable in place: Enabled: false on each enterprise stanza, the rest of
+    # the file as it was. Rewritten through cat so owner and mode stay.
+    for f in "$APT_DIR"/*.sources; do
+        [ -f "$f" ] || continue
+        grep -q 'enterprise\.proxmox\.com' "$f" || continue
+        tmp="$(mktemp)"
+        awk '
+            function flush(   i) {
+                for (i = 1; i <= n; i++)
+                    if (!(ent && tolower(buf[i]) ~ /^enabled[[:space:]]*:/)) print buf[i]
+                if (ent) print "Enabled: false"
+                n = ent = 0
+            }
+            /^[[:space:]]*$/ { flush(); print; next }
+            { buf[++n] = $0; if ($0 !~ /^[[:space:]]*#/ && /enterprise\.proxmox\.com/) ent = 1 }
+            END { flush() }' "$f" >"$tmp"
+        cmp -s "$tmp" "$f" || cat "$tmp" >"$f"
+        rm -f "$tmp"
+    done
+    for f in "$APT_DIR"/*.list; do
+        [ -f "$f" ] || continue
+        if grep -Eq '^[[:space:]]*deb(-src)?[[:space:]].*enterprise\.proxmox\.com' "$f"; then
+            tmp="$(mktemp)"
+            sed -E 's/^([[:space:]]*deb(-src)?[[:space:]].*enterprise\.proxmox\.com)/# \1/' "$f" >"$tmp"
+            cat "$tmp" >"$f"
+            rm -f "$tmp"
+        fi
+    done
+    # Add only what no enabled source already provides, so a rerun (or a repo
+    # added by hand or in the web UI) never gets a duplicate.
+    if ! has_source http://download.proxmox.com/debian/pve "$suite" pve-no-subscription; then
+        new="Types: deb
+URIs: http://download.proxmox.com/debian/pve
+Suites: $suite
+Components: pve-no-subscription
+Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
+"
+    fi
+    if [ -n "$ceph" ] && ! has_source "http://download.proxmox.com/debian/ceph-$ceph" "$suite" no-subscription; then
+        new="${new:+$new
+}Types: deb
+URIs: http://download.proxmox.com/debian/ceph-$ceph
+Suites: $suite
+Components: no-subscription
+Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
+"
+    fi
+    if [ -n "$new" ]; then
+        f="$APT_DIR/pve-no-subscription.sources"
+        if [ -s "$f" ]; then new="
+$new"; fi
+        printf '%s' "$new" >>"$f"
+    fi
+    apt-get update
+    log "pve-no-subscription is not recommended for production by Proxmox; with a subscription, re-enable the enterprise repos"
+}
 
 # Fingerprints (SHA256:...) of the keys in a key file, one per line.
 fingerprints() { ssh-keygen -l -f "$1" 2>/dev/null | awk '{print $2}'; }

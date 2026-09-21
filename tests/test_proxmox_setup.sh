@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # Behaviour checks on scripts/proxmox_setup.sh. Every host path is redirected
 # into a temp fixture (PVE_SETUP_PREFIX) and every command that would touch the
-# machine (sshd, systemctl, journalctl, sysctl, tailscale) is a stub, so
+# machine (apt-get, sshd, systemctl, journalctl, sysctl, tailscale) is a stub, so
 # nothing here changes the machine it runs on. Run from anywhere.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SCRIPT="$ROOT/scripts/proxmox_setup.sh"
+# PVE_SETUP_SCRIPT lets tests/test_setup_sh.py run this suite on a mutant.
+SCRIPT="${PVE_SETUP_SCRIPT:-$ROOT/scripts/proxmox_setup.sh}"
 fail() {
     echo "FAIL: $*" >&2
     exit 1
@@ -59,6 +60,16 @@ tailscale() {
             ;;
     esac
 }
+apt-get() {
+    echo "apt-get $*" >>"$F/calls"
+    return "${APT_RC:-0}"
+}
+# HARNESS_CALL=do_repos runs one function directly, bypassing the runner.
+if [ -n "${HARNESS_CALL:-}" ]; then
+    OPT_YES=1
+    "$HARNESS_CALL"
+    exit
+fi
 main "$@"
 STUBS
 } >"$HARNESS"
@@ -151,5 +162,113 @@ echo 0 >"$F/ip_forward"
 echo 1 >"$F/ip_forward"
 echo '{"AdvertiseRoutes":null,"Note":"192.168.1.0/24"}' >"$F/prefs.json"
 [ "$(status_of subnet-router)" = todo ] || fail "route outside AdvertiseRoutes counted"
+
+# --- repos --------------------------------------------------------------------
+A="$F/etc/apt/sources.list.d"
+mkdir -p "$A"
+snapshot() { cat "$F/etc/os-release" "$A"/* 2>/dev/null | cksum; }
+fresh_apt() {
+    rm -rf "$A" "$F/calls"
+    mkdir -p "$A"
+    printf 'PRETTY_NAME="Debian GNU/Linux"\nVERSION_CODENAME=%s\n' "$1" >"$F/etc/os-release"
+    printf 'Types: deb\nURIs: http://deb.debian.org/debian/\nSuites: %s %s-updates\nComponents: main contrib\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\n' \
+        "$1" "$1" >"$A/debian.sources"
+    printf 'deb http://deb.debian.org/debian %s main\n' "$1" >"$F/etc/apt/sources.list"
+}
+
+# 11. PVE 9 (deb822) fresh install, Ceph repo present.
+fresh_apt trixie
+cat >"$A/pve-enterprise.sources" <<'EOF'
+# managed by the installer
+Types: deb
+URIs: https://enterprise.proxmox.com/debian/pve
+Suites: trixie
+Components: pve-enterprise
+Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
+EOF
+cat >"$A/ceph.sources" <<'EOF'
+Types: deb
+URIs: https://enterprise.proxmox.com/debian/ceph-squid
+Suites: trixie
+Components: enterprise
+Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
+Enabled: yes
+EOF
+debian_before="$(cksum <"$A/debian.sources")"
+list_before="$(cksum <"$F/etc/apt/sources.list")"
+[ "$(status_of repos)" = todo ] || fail "repos done with the enterprise repos enabled"
+run --yes --only repos >/dev/null || fail "repos step failed on a fresh PVE 9 layout"
+calls | grep -qx 'apt-get update' || fail "apt-get update not run"
+[ "$(tail -n1 "$A/pve-enterprise.sources")" = "Enabled: false" ] || fail "pve-enterprise.sources not disabled"
+head -n1 "$A/pve-enterprise.sources" | grep -qx '# managed by the installer' || fail "pve-enterprise.sources comment lost"
+grep -qx 'Components: pve-enterprise' "$A/pve-enterprise.sources" || fail "pve-enterprise.sources fields lost"
+[ "$(grep -i '^enabled:' "$A/ceph.sources")" = "Enabled: false" ] || fail "ceph.sources not disabled exactly once"
+[ "$(cksum <"$A/debian.sources")" = "$debian_before" ] || fail "debian.sources touched"
+[ "$(cksum <"$F/etc/apt/sources.list")" = "$list_before" ] || fail "sources.list touched"
+cat >"$F/want" <<'EOF'
+Types: deb
+URIs: http://download.proxmox.com/debian/pve
+Suites: trixie
+Components: pve-no-subscription
+Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
+
+Types: deb
+URIs: http://download.proxmox.com/debian/ceph-squid
+Suites: trixie
+Components: no-subscription
+Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
+EOF
+cmp -s "$F/want" "$A/pve-no-subscription.sources" ||
+    fail "pve-no-subscription.sources: $(cat "$A/pve-no-subscription.sources")"
+[ "$(status_of repos)" = "done" ] || fail "repos not done after the step"
+
+# 12. Idempotent: the runner skips it, and do_repos itself changes nothing.
+before="$(snapshot)"
+rm -f "$F/calls"
+run --yes --only repos >/dev/null
+[ -z "$(calls)" ] || fail "repos reran although done"
+HARNESS_CALL=do_repos run >/dev/null || fail "do_repos rerun failed"
+[ "$(snapshot)" = "$before" ] || fail "do_repos rerun changed the sources"
+[ "$(status_of repos)" = "done" ] || fail "repos not done after a rerun"
+
+# 13. The check reads what apt would use: re-enabled enterprise, a no-subscription
+# repo for another suite, or a disabled one, are all todo.
+sed -i.bak 's/^Enabled: false$/Enabled: yes/' "$A/pve-enterprise.sources"
+[ "$(status_of repos)" = todo ] || fail "repos done with pve-enterprise enabled"
+mv "$A/pve-enterprise.sources.bak" "$A/pve-enterprise.sources"
+printf 'PRETTY_NAME="Debian"\nVERSION_CODENAME="forky"\n' >"$F/etc/os-release"
+[ "$(status_of repos)" = todo ] || fail "repos done with no-subscription for another suite"
+printf 'VERSION_CODENAME=trixie\n' >"$F/etc/os-release"
+sed -i.bak '5a\
+Enabled: no
+' "$A/pve-no-subscription.sources"
+[ "$(status_of repos)" = todo ] || fail "repos done with no-subscription disabled"
+rm -f "$A"/*.bak
+
+# 14. PVE 8 (.list) layout on bookworm, no Ceph repo; apt-get failing fails the step.
+fresh_apt bookworm
+printf '# keep me\ndeb https://enterprise.proxmox.com/debian/pve bookworm pve-enterprise\n' >"$A/pve-enterprise.list"
+[ "$(status_of repos)" = todo ] || fail "repos done with the .list enterprise repo enabled"
+if APT_RC=100 run --yes --only repos >/dev/null 2>&1; then fail "apt-get update failure not reported"; fi
+rm -f "$A/pve-no-subscription.sources"
+# Start over from the uncommented file.
+printf '# keep me\ndeb https://enterprise.proxmox.com/debian/pve bookworm pve-enterprise\n' >"$A/pve-enterprise.list"
+run --yes --only repos >/dev/null || fail "repos step failed on a PVE 8 layout"
+[ "$(cat "$A/pve-enterprise.list")" = "$(printf '# keep me\n# deb https://enterprise.proxmox.com/debian/pve bookworm pve-enterprise')" ] ||
+    fail "pve-enterprise.list not commented in place: $(cat "$A/pve-enterprise.list")"
+grep -qx 'Suites: bookworm' "$A/pve-no-subscription.sources" || fail "suite not taken from os-release"
+if grep -q ceph "$A/pve-no-subscription.sources"; then fail "Ceph repo added without a Ceph enterprise repo"; fi
+[ "$(status_of repos)" = "done" ] || fail "repos not done on the PVE 8 layout"
+before="$(snapshot)"
+HARNESS_CALL=do_repos run >/dev/null
+[ "$(snapshot)" = "$before" ] || fail "do_repos rerun changed the .list layout"
+
+# 15. No-subscription already enabled in another file (what the PVE 9 web UI
+# writes): done, and no duplicate is added.
+fresh_apt trixie
+printf 'Types: deb\nURIs: http://download.proxmox.com/debian/pve/\nSuites: trixie\nComponents: pve-no-subscription\nSigned-By: /usr/share/keyrings/proxmox-archive-keyring.gpg\n' >"$A/proxmox.sources"
+[ "$(status_of repos)" = "done" ] || fail "existing no-subscription repo not recognised"
+HARNESS_CALL=do_repos run >/dev/null
+[ ! -e "$A/pve-no-subscription.sources" ] || fail "duplicate no-subscription repo written"
 
 echo "ok: proxmox_setup.sh behaviour"

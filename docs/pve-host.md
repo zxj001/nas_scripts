@@ -1,4 +1,4 @@
-# Proxmox host: SSH and Tailscale
+# Proxmox host: repositories, SSH and Tailscale
 
 Automated by `scripts/proxmox_setup.sh`. **Before you run it**, have your own public key
 ready (`cat ~/.ssh/id_ed25519.pub` on your client). `ssh-harden` refuses to turn passwords off until
@@ -9,8 +9,9 @@ own node keys in that file do not count. Then, as root on the host:
 curl -fsSL https://raw.githubusercontent.com/zxj001/nas_scripts/main/scripts/proxmox_setup.sh | bash
 ```
 
-It offers `ssh-keys` (paste your key), `ssh-harden`, `tailscale` and `subnet-router`, with
-the same `--status`, `--yes` and `--only a,b` flags as `setup-machine`. After `ssh-keys`, log
+It offers `repos` (see [Package repositories](#package-repositories)), `ssh-keys` (paste
+your key), `ssh-harden`, `tailscale` and `subnet-router`, with the same `--status`, `--yes`
+and `--only a,b` flags as `setup-machine`. After `ssh-keys`, log
 in with the key from a new terminal when `ssh-harden` asks. Rerun the line to update. It
 refuses to run anywhere but a Proxmox VE host.
 
@@ -19,7 +20,7 @@ including it. Unattended, pass the key and leave the subnet router out:
 
 ```
 curl -fsSL https://raw.githubusercontent.com/zxj001/nas_scripts/main/scripts/proxmox_setup.sh |
-  PVE_OPERATOR_KEY="ssh-ed25519 AAAA... you@client" bash -s -- --yes --only ssh-keys
+  PVE_OPERATOR_KEY="ssh-ed25519 AAAA... you@client" bash -s -- --yes --only repos,ssh-keys
 # log in once with that key from the client, then:
 curl -fsSL https://raw.githubusercontent.com/zxj001/nas_scripts/main/scripts/proxmox_setup.sh |
   bash -s -- --yes --only ssh-harden,tailscale
@@ -45,6 +46,52 @@ Check which Debian the host is on (PVE 8 is Debian 12, PVE 9 is Debian 13):
 ```
 pveversion
 ```
+
+## Package repositories
+
+A fresh install enables the enterprise repositories (`pve-enterprise`, and the Ceph
+`enterprise` one), which need a subscription. Without one every `apt update` fails:
+
+```
+Err:9 https://enterprise.proxmox.com/debian/pve trixie InRelease   401  Unauthorized
+E: The repository 'https://enterprise.proxmox.com/debian/pve trixie InRelease' is not signed.
+```
+
+The `repos` step, first in the list because everything that installs packages needs apt,
+turns those off and turns on `pve-no-subscription`, for the suite in `/etc/os-release`:
+
+- sets `Enabled: false` in each enterprise stanza of `pve-enterprise.sources` / `ceph.sources`
+  (PVE 9), or comments the enterprise line in `pve-enterprise.list` / `ceph.list` (PVE 8),
+  keeping the rest of the file
+- writes `/etc/apt/sources.list.d/pve-no-subscription.sources`, plus a Ceph
+  `no-subscription` stanza for the same Ceph release when a Ceph enterprise repo was there,
+  unless an enabled source already provides it
+- runs `apt-get update`
+
+It never touches `debian.sources` or `sources.list`. Proxmox does not recommend
+`pve-no-subscription` for production; with a subscription, re-enable the enterprise repos.
+The web UI's "no valid subscription" dialog is separate and stays.
+
+By hand on PVE 9 (Datacenter → pve1 → Updates → Repositories in the web UI does the same):
+
+```
+echo 'Enabled: false' >> /etc/apt/sources.list.d/pve-enterprise.sources
+echo 'Enabled: false' >> /etc/apt/sources.list.d/ceph.sources
+cat > /etc/apt/sources.list.d/pve-no-subscription.sources <<EOF
+Types: deb
+URIs: http://download.proxmox.com/debian/pve
+Suites: $(. /etc/os-release; echo "$VERSION_CODENAME")
+Components: pve-no-subscription
+Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
+EOF
+apt update
+```
+
+Each of those files holds a single stanza on a fresh install, so appending is enough;
+check first with `cat`. If you use Ceph, add a second stanza with
+`URIs: http://download.proxmox.com/debian/ceph-<release>` (the release the enterprise entry
+named) and `Components: no-subscription`. On PVE 8, put `#` in front of the `deb` line in
+`pve-enterprise.list` and `ceph.list` instead.
 
 ## SSH
 
@@ -175,6 +222,7 @@ alarm thresholds. Check readings again after reboot if you added a module file.
 
 ## References
 
+- https://pve.proxmox.com/wiki/Package_Repositories
 - https://pve.proxmox.com/pve-docs/pve-admin-guide.html (cluster manager: root SSH between nodes)
 - https://pve.proxmox.com/wiki/FAQ (PVE to Debian release mapping)
 - https://tailscale.com/kb/1133/proxmox

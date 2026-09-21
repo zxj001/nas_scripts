@@ -1,5 +1,7 @@
 # 5. Dev tools
 
+Automated by `setup-machine --only dev-tools,gh,node`.
+
 ## Basics
 
 ```

@@ -1,5 +1,7 @@
 # 2. Post-install
 
+Automated by `setup-machine --only upgrade,guest-agent,no-sleep` (the snapshot stays manual).
+
 ## Update
 
 ```

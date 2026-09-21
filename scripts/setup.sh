@@ -67,7 +67,7 @@ check_sudo() {
 default_sudo() { debian_only; }
 do_sudo() {
     log "asking for the root password to add $(id -un) to the sudo group"
-    su -c "apt-get update && apt-get install -y sudo && usermod -aG sudo $(id -un)" </dev/tty
+    su -c "apt-get update && apt-get install -y sudo && /usr/sbin/usermod -aG sudo $(id -un)" </dev/tty
     echo "log out, log back in, then rerun setup-machine"
     exit 75
 }
@@ -78,7 +78,7 @@ do_sudo() {
 # that hasn't run `apt update` in a while may under-report.
 check_upgrade() {
     [ "$OS" = debian ] || return 2
-    if apt-get -s full-upgrade 2>/dev/null | grep -q '^Inst '; then
+    if apt-get -s full-upgrade 2>/dev/null | grep '^Inst ' >/dev/null; then
         return 1
     fi
     return 0
@@ -162,7 +162,7 @@ PermitRootLogin no
 PubkeyAuthentication yes
 PasswordAuthentication no
 EOF
-    sudo sshd -t
+    sudo sshd -t || { sudo rm -f /etc/ssh/sshd_config.d/99-local.conf; return 1; }
     sudo systemctl reload ssh
     log "verify a new key-based session before closing this one"
 }
@@ -279,6 +279,13 @@ prompt() {
     esac
 }
 
+# $1 is the space separated list of steps that ran this run.
+reboot_reminder() {
+    if [ -e /run/reboot-required ] || [[ " $1 " == *" upgrade "* ]]; then
+        log "reboot to finish: sudo reboot"
+    fi
+}
+
 main() {
     parse_args "$@"
     if [ "$OPT_HELP" = 1 ]; then
@@ -289,7 +296,7 @@ main() {
     self_update "$@"
     select_steps
 
-    local step rc status
+    local step rc status ran=""
     local todo=()
     printf '%-14s %s\n' STEP STATUS
     for step in "${SELECTED[@]}"; do
@@ -306,7 +313,11 @@ main() {
         printf '%-14s %s\n' "$step" "$status"
     done
 
-    if [ "$OPT_STATUS" = 1 ] || [ "${#todo[@]}" -eq 0 ]; then
+    if [ "$OPT_STATUS" = 1 ]; then
+        return 0
+    fi
+    if [ "${#todo[@]}" -eq 0 ]; then
+        reboot_reminder "$ran"
         return 0
     fi
     if [ "$OPT_YES" != 1 ] && ! { : </dev/tty; } 2>/dev/null; then
@@ -314,7 +325,6 @@ main() {
         return 1
     fi
 
-    local ran=""
     for step in "${todo[@]}"; do
         if [ "$OPT_YES" != 1 ] && ! prompt "$step" "$("$(fname default "$step")")"; then
             continue
@@ -332,17 +342,13 @@ main() {
         fi
         if [ "$rc" -ne 0 ]; then
             echo "step failed: $step" >&2
+            reboot_reminder "$ran"
             return 1
         fi
         ran="$ran $step"
     done
     log "done. Sign in where needed: gh auth login, codex, pi /login, claude"
-    case " $ran " in
-        *" upgrade "*) log "reboot to finish: sudo reboot" ; return 0 ;;
-    esac
-    if [ -e /run/reboot-required ]; then
-        log "reboot to finish: sudo reboot"
-    fi
+    reboot_reminder "$ran"
 }
 
 main "$@"

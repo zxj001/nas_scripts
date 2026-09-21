@@ -293,6 +293,16 @@ check_herdr() { have herdr; }
 default_herdr() { echo yes; }
 do_herdr() {
     curl -fsSL https://herdr.dev/install.sh | sh
+    if [ "$OS" = macos ]; then
+        case ":$PATH:" in
+            *":$HOME/.local/bin:"*) ;;
+            *)
+                # shellcheck disable=SC2016  # literal, expanded when .zprofile runs
+                echo 'export PATH="$HOME/.local/bin:$PATH"' >>"$HOME/.zprofile"
+                export PATH="$HOME/.local/bin:$PATH"
+                ;;
+        esac
+    fi
     if have claude; then
         herdr integration install claude
     fi

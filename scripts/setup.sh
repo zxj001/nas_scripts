@@ -102,13 +102,17 @@ parse_args() {
     while [ $# -gt 0 ]; do
         case "$1" in
             --status) OPT_STATUS=1 ;;
-            --yes | -y) OPT_YES=1 ;;
+            --yes) OPT_YES=1 ;;
             --only)
+                if [ $# -lt 2 ]; then
+                    echo "--only needs a step list, e.g. --only dev-tools,firstmate" >&2
+                    usage >&2
+                    exit 2
+                fi
+                OPT_ONLY="$2"
                 shift
-                OPT_ONLY="${1:-}"
                 ;;
-            --only=*) OPT_ONLY="${1#--only=}" ;;
-            --help | -h) OPT_HELP=1 ;;
+            --help) OPT_HELP=1 ;;
             *)
                 echo "unknown option: $1" >&2
                 usage >&2
@@ -190,7 +194,7 @@ main() {
     if [ "$OPT_STATUS" = 1 ] || [ "${#todo[@]}" -eq 0 ]; then
         return 0
     fi
-    if [ "$OPT_YES" != 1 ] && [ ! -r /dev/tty ]; then
+    if [ "$OPT_YES" != 1 ] && ! { : </dev/tty; } 2>/dev/null; then
         echo "no terminal to prompt on - rerun with --yes" >&2
         return 1
     fi
@@ -200,7 +204,14 @@ main() {
             continue
         fi
         log "$step"
-        if ! "$(fname "do" "$step")"; then
+        set +e
+        (
+            set -e
+            "$(fname "do" "$step")"
+        )
+        rc=$?
+        set -e
+        if [ "$rc" -ne 0 ]; then
             echo "step failed: $step" >&2
             return 1
         fi

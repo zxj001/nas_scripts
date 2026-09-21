@@ -17,12 +17,15 @@ else
     echo "shellcheck not installed, skipped"
 fi
 
-# Every registered step needs its check_/do_/default_ trio.
-steps="$(sed -n 's/^STEPS=(\(.*\))$/\1/p' "$SETUP")"
-[ -n "$steps" ] || fail "no STEPS registry found in $SETUP"
-for step in $steps; do
+# Every registered step needs its check_/do_/default_ trio. Load the script's
+# definitions (everything but the trailing `main "$@"`) and ask bash for the
+# functions it actually defined.
+STEPS=()
+eval "$(sed '$d' "$SETUP")"
+[ "${#STEPS[@]}" -gt 0 ] || fail "no STEPS registry found in $SETUP"
+for step in "${STEPS[@]}"; do
     for prefix in check "do" default; do
-        grep -q "^${prefix}_${step//-/_}()" "$SETUP" ||
+        declare -F "${prefix}_${step//-/_}" >/dev/null ||
             fail "step '$step' has no ${prefix}_${step//-/_} function"
     done
 done
@@ -31,4 +34,4 @@ done
 # test never clones or re-execs.
 SETUP_UPDATED=1 bash "$SETUP" --status >/dev/null || fail "--status exited nonzero"
 
-echo "ok: $(echo "$steps" | wc -w | tr -d ' ') steps"
+echo "ok: ${#STEPS[@]} steps"

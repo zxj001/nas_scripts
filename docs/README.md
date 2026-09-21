@@ -25,6 +25,21 @@ setup-machine            # offer each step that is not done yet
 setup-machine --status   # just show what is done and what is left
 ```
 
+On a minimal Debian install, install the download prerequisite first:
+
+```
+sudo apt-get update
+sudo apt-get install -y curl ca-certificates
+```
+
+When running a local copy of `scripts/setup.sh`, its download steps install these
+prerequisites themselves, including `--only tailscale`.
+
+`--status` does not update or clone the repository. Normal runs preserve modified
+checkouts, existing launchers, custom apt/SSH files, and nvm defaults. Conflicting
+configuration stops the affected step with the path to resolve; it is not replaced.
+See the [setup safety audit](setup-safety.md) for the step-by-step review and limits.
+
 It ends by listing the sign-ins it can't do for you (`gh auth login`, `codex`, `pi`,
 `claude`, and on macOS Tailscale.app: open it and sign in). The steps below are what the
 script does, for doing it by hand or fixing one step.

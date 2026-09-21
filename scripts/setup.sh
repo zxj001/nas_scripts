@@ -42,12 +42,74 @@ log() { printf '==> %s\n' "$*"; }
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
+append_once() {
+    local line="$1" file="$2"
+    if ! grep -qxF "$line" "$file" 2>/dev/null; then
+        # A leading newline also handles a profile without a trailing newline.
+        printf '\n%s\n' "$line" >>"$file"
+    fi
+}
+
+# Publish only complete files, without replacing an existing file or symlink.
+# The hard link is atomic and fails if another writer claimed the destination.
+# Existing identical regular files are left untouched.
+create_config() {
+    local source="$1" target="$2" stage
+    CONFIG_CREATED=0
+    if sudo test -e "$target" || sudo test -L "$target"; then
+        if ! sudo test -L "$target" && sudo test -f "$target" && sudo cmp -s "$source" "$target"; then
+            return 0
+        fi
+        echo "refusing to replace existing configuration: $target" >&2
+        return 1
+    fi
+    stage="$(sudo mktemp "${target}.XXXXXX")" || return 1
+    if ! sudo install -m 644 "$source" "$stage" || ! sudo ln -T "$stage" "$target"; then
+        sudo rm -f "$stage"
+        return 1
+    fi
+    sudo rm -f "$stage"
+    CONFIG_CREATED=1
+}
+
+ensure_https() {
+    if [ "$OS" = debian ] && { ! have curl ||
+        [ "$(dpkg-query -W -f='${Status}' ca-certificates 2>/dev/null)" != 'install ok installed' ]; }; then
+        sudo apt-get update
+        sudo apt-get install -y curl ca-certificates
+    fi
+}
+
+# Do not execute a truncated download if curl fails halfway through.
+run_installer() {
+    local url="$1" interpreter="$2" script rc=0
+    ensure_https
+    script="$(mktemp)" || return 1
+    curl -fsSL "$url" -o "$script" || rc=$?
+    if [ "$rc" = 0 ]; then
+        "$interpreter" "$script" || rc=$?
+    fi
+    rm -f "$script"
+    return "$rc"
+}
+
 # check/do/default function name for a step ("ssh-keys" -> "check_ssh_keys")
 fname() { printf '%s_%s' "$1" "${2//-/_}"; }
 
 detect_os() {
     case "$(uname -s)" in
-        Linux) OS=debian ;;
+        Linux)
+            # The apt sources and package names below target Debian 13.
+            if [ ! -r /etc/os-release ] || ! (
+                # shellcheck source=/dev/null
+                . /etc/os-release
+                [ "${ID:-}" = debian ] && [ "${VERSION_ID:-}" = 13 ]
+            ); then
+                echo "unsupported Linux distribution: this script requires Debian 13" >&2
+                exit 1
+            fi
+            OS=debian
+            ;;
         Darwin) OS=macos ;;
         *)
             echo "unsupported OS: $(uname -s) - this script does Debian 13 and macOS" >&2
@@ -63,7 +125,7 @@ debian_only() { if [ "$OS" = debian ]; then echo yes; else echo no; fi; }
 
 check_sudo() {
     [ "$OS" = debian ] || return 2
-    id -nG | grep -qw sudo
+    have sudo && id -nG | grep -qw sudo
 }
 default_sudo() { debian_only; }
 do_sudo() {
@@ -87,7 +149,7 @@ check_upgrade() {
 default_upgrade() { debian_only; }
 do_upgrade() {
     sudo apt-get update
-    sudo apt-get full-upgrade -y
+    sudo apt-get -o Dpkg::Options::=--force-confold full-upgrade --no-remove -y
 }
 
 check_guest_agent() {
@@ -104,7 +166,10 @@ do_guest_agent() {
 
 check_no_sleep() {
     [ "$OS" = debian ] || return 2
-    [ "$(systemctl is-enabled sleep.target 2>/dev/null)" = masked ]
+    local target
+    for target in sleep suspend hibernate hybrid-sleep; do
+        [ "$(systemctl is-enabled "$target.target" 2>/dev/null)" = masked ] || return 1
+    done
 }
 default_no_sleep() { debian_only; }
 do_no_sleep() {
@@ -140,7 +205,11 @@ do_ssh_keys() {
             echo "not a public key, ignored" >&2
             continue
         fi
-        printf '%s\n' "$key" >>"$HOME/.ssh/authorized_keys"
+        if grep -qxF "$key" "$HOME/.ssh/authorized_keys"; then
+            log "key already present"
+            continue
+        fi
+        printf '\n%s\n' "$key" >>"$HOME/.ssh/authorized_keys"
         log "added $(ssh-keygen -l -f "$tmp")"
     done
     rm -f "$tmp"
@@ -150,21 +219,31 @@ do_ssh_keys() {
 
 check_ssh_harden() {
     [ "$OS" = debian ] || return 2
-    [ -f /etc/ssh/sshd_config.d/99-local.conf ]
+    cmp -s /etc/ssh/sshd_config.d/99-local.conf <(ssh_hardening_config)
+}
+ssh_hardening_config() {
+    printf '%s\n' 'PermitRootLogin no' 'PubkeyAuthentication yes' 'PasswordAuthentication no'
 }
 default_ssh_harden() { debian_only; }
 do_ssh_harden() {
-    if [ ! -s "$HOME/.ssh/authorized_keys" ]; then
-        echo "refusing: $HOME/.ssh/authorized_keys is empty, this would lock you out - run ssh-keys first" >&2
+    if [ "$(id -u)" = 0 ] || ! ssh-keygen -l -f "$HOME/.ssh/authorized_keys" >/dev/null 2>&1; then
+        echo "refusing: hardening requires a non-root user with a valid authorized key - run ssh-keys first" >&2
         return 1
     fi
-    sudo tee /etc/ssh/sshd_config.d/99-local.conf >/dev/null <<'EOF'
-PermitRootLogin no
-PubkeyAuthentication yes
-PasswordAuthentication no
-EOF
-    sudo sshd -t || { sudo rm -f /etc/ssh/sshd_config.d/99-local.conf; return 1; }
-    sudo systemctl reload ssh
+    local config=/etc/ssh/sshd_config.d/99-local.conf tmp created
+    tmp="$(mktemp)"
+    ssh_hardening_config >"$tmp"
+    sudo mkdir -p /etc/ssh/sshd_config.d
+    if ! create_config "$tmp" "$config"; then rm -f "$tmp"; return 1; fi
+    created="$CONFIG_CREATED"
+    rm -f "$tmp"
+    if ! sudo sshd -t || ! sudo systemctl reload ssh; then
+        if [ "$created" = 1 ]; then
+            sudo rm -f "$config"
+            sudo systemctl reload ssh || true
+        fi
+        return 1
+    fi
     log "verify a new key-based session before closing this one"
 }
 
@@ -176,10 +255,10 @@ check_brew() {
 default_brew() { echo yes; }
 do_brew() {
     local brew
-    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" </dev/tty
+    run_installer https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh /bin/bash </dev/tty
     if [ -x /opt/homebrew/bin/brew ]; then brew=/opt/homebrew/bin/brew; else brew=/usr/local/bin/brew; fi
     [ -x "$brew" ]
-    echo "eval \"\$($brew shellenv)\"" >>"$HOME/.zprofile"
+    append_once "eval \"\$($brew shellenv)\"" "$HOME/.zprofile"
     eval "$("$brew" shellenv)"
 }
 
@@ -194,17 +273,25 @@ default_tailscale() { echo yes; }
 do_tailscale() {
     case "$OS" in
         debian)
-            curl -fsSL https://tailscale.com/install.sh | sh
+            if ! have tailscale; then
+                run_installer https://tailscale.com/install.sh sh
+            fi
             sudo tailscale up  # prints a URL to open
             ;;
         macos)
-            brew install --cask tailscale
+            if ! have tailscale && [ ! -x /Applications/Tailscale.app/Contents/MacOS/Tailscale ]; then
+                brew install --cask tailscale
+            fi
             log "open the Tailscale app and sign in, then rerun --status"
             ;;
     esac
 }
 
 check_dev_tools() {
+    if [ "$OS" = debian ]; then
+        have curl && have make && have gcc && have g++ &&
+            [ "$(dpkg-query -W -f='${Status}' ca-certificates 2>/dev/null)" = 'install ok installed' ] || return 1
+    fi
     have git && have jq && have rg &&
         [ -d "$HOME/projects" ] && [ -d "$HOME/tools" ]
 }
@@ -226,16 +313,18 @@ do_gh() {
     case "$OS" in
         debian)
             # GitHub's apt repo, verbatim from docs/05-dev-tools.md.
-            local keyring=/etc/apt/keyrings/githubcli-archive-keyring.gpg
-            sudo apt-get update
-            sudo apt-get install -y wget
+            local keyring=/etc/apt/keyrings/githubcli-archive-keyring.gpg tmp
+            ensure_https
             sudo mkdir -p -m 755 /etc/apt/keyrings
-            wget -nv -O- https://cli.github.com/packages/githubcli-archive-keyring.gpg |
-                sudo tee "$keyring" >/dev/null
-            sudo chmod go+r "$keyring"
+            tmp="$(mktemp)"
+            if ! sudo test -e "$keyring" && ! sudo test -L "$keyring"; then
+                if ! curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o "$tmp" ||
+                    ! create_config "$tmp" "$keyring"; then rm -f "$tmp"; return 1; fi
+            fi
             sudo mkdir -p -m 755 /etc/apt/sources.list.d
-            echo "deb [arch=$(dpkg --print-architecture) signed-by=$keyring] https://cli.github.com/packages stable main" |
-                sudo tee /etc/apt/sources.list.d/github-cli.list >/dev/null
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=$keyring] https://cli.github.com/packages stable main" >"$tmp"
+            if ! create_config "$tmp" /etc/apt/sources.list.d/github-cli.list; then rm -f "$tmp"; return 1; fi
+            rm -f "$tmp"
             sudo apt-get update
             sudo apt-get install -y gh
             ;;
@@ -252,20 +341,30 @@ check_node() {
 }
 default_node() { echo yes; }
 do_node() {
-    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.7/install.sh | bash
     # Source nvm here too, so the pi step below sees npm in this same run.
-    export NVM_DIR="$HOME/.nvm"
+    export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+    if [ ! -s "$NVM_DIR/nvm.sh" ]; then
+        if [ -e "$NVM_DIR" ] || [ -L "$NVM_DIR" ]; then
+            echo "refusing to install over an existing incomplete nvm directory: $NVM_DIR" >&2
+            return 1
+        fi
+        mkdir -p "$NVM_DIR"
+        run_installer https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.7/install.sh bash
+    fi
+    [ -s "$NVM_DIR/nvm.sh" ] || return 1
     # shellcheck source=/dev/null
-    [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+    . "$NVM_DIR/nvm.sh"
     nvm install 22
-    nvm alias default 22
+    if [ ! -e "$NVM_DIR/alias/default" ] && [ ! -L "$NVM_DIR/alias/default" ]; then
+        nvm alias default 22
+    fi
 }
 
 check_codex() { have codex; }
 default_codex() { echo yes; }
 do_codex() {
     case "$OS" in
-        debian) curl -fsSL https://chatgpt.com/codex/install.sh | sh ;;
+        debian) run_installer https://chatgpt.com/codex/install.sh sh ;;
         macos) brew install --cask codex ;;
     esac
 }
@@ -279,15 +378,9 @@ default_claude() { echo yes; }
 do_claude() {
     case "$OS" in
         debian)
-            curl -fsSL https://claude.ai/install.sh | bash
-            case ":$PATH:" in
-                *":$HOME/.local/bin:"*) ;;
-                *)
-                    # shellcheck disable=SC2016  # literal, expanded when .bashrc runs
-                    echo 'export PATH="$HOME/.local/bin:$PATH"' >>"$HOME/.bashrc"
-                    export PATH="$HOME/.local/bin:$PATH"
-                    ;;
-            esac
+            run_installer https://claude.ai/install.sh bash
+            # shellcheck disable=SC2016  # literal, expanded when .bashrc runs
+            append_once 'export PATH="$HOME/.local/bin:$PATH"' "$HOME/.bashrc"
             ;;
         macos) brew install --cask claude-code ;;
     esac
@@ -296,25 +389,28 @@ do_claude() {
 check_herdr() { have herdr; }
 default_herdr() { echo yes; }
 do_herdr() {
-    curl -fsSL https://herdr.dev/install.sh | sh
+    run_installer https://herdr.dev/install.sh sh
     if [ "$OS" = macos ]; then
-        case ":$PATH:" in
-            *":$HOME/.local/bin:"*) ;;
-            *)
-                # shellcheck disable=SC2016  # literal, expanded when .zprofile runs
-                echo 'export PATH="$HOME/.local/bin:$PATH"' >>"$HOME/.zprofile"
-                export PATH="$HOME/.local/bin:$PATH"
-                ;;
-        esac
+        # shellcheck disable=SC2016  # literal, expanded when .zprofile runs
+        append_once 'export PATH="$HOME/.local/bin:$PATH"' "$HOME/.zprofile"
     fi
     if have claude; then
-        herdr integration install claude
+        if [ -e "$HOME/.claude/settings.json" ] || [ -L "$HOME/.claude/settings.json" ]; then
+            log "preserving existing Claude settings; run 'herdr integration install claude' to configure hooks yourself"
+        else
+            herdr integration install claude
+        fi
     fi
 }
 
-check_firstmate() { [ -d "$HOME/tools/firstmate/.git" ]; }
+check_firstmate() { [ -e "$HOME/tools/firstmate/.git" ]; }
 default_firstmate() { echo yes; }
 do_firstmate() {
+    if check_firstmate; then return 0; fi
+    if [ -e "$HOME/tools/firstmate" ] || [ -L "$HOME/tools/firstmate" ]; then
+        echo "refusing to clone over existing path: $HOME/tools/firstmate" >&2
+        return 1
+    fi
     mkdir -p "$HOME/tools"
     git clone https://github.com/kunchenguid/firstmate "$HOME/tools/firstmate"
 }
@@ -350,17 +446,18 @@ do_gpu() {
         echo "gpu: Secure Boot is on - the DKMS-built nvidia module will not load until Secure Boot is disabled or the dkms key is enrolled, see docs/gpu-passthrough.md" >&2
     fi
     # Drop in only the components no active source already carries, so apt
-    # never sees a target configured twice. The drop-in itself is excluded so
-    # a rerun recomputes the same set; a component after a # (the netinst
+    # never sees a target configured twice. Include our existing drop-in on
+    # reruns; a component after a # (the netinst
     # cdrom line mentions contrib) does not count. -q exits 0 on a match even
     # when a listed file is missing.
-    local c missing=""
+    local c tmp missing=""
     for c in contrib non-free non-free-firmware; do
-        grep -rqsE "^[^#]*(^|[[:space:]])$c([[:space:]]|$)" --exclude=nonfree.sources \
+        grep -rqsE "^[^#]*(^|[[:space:]])$c([[:space:]]|$)" \
             /etc/apt/sources.list /etc/apt/sources.list.d/ || missing="$missing $c"
     done
     if [ -n "$missing" ]; then
-        sudo tee /etc/apt/sources.list.d/nonfree.sources >/dev/null <<EOF
+        tmp="$(mktemp)"
+        cat >"$tmp" <<EOF
 Types: deb
 URIs: http://deb.debian.org/debian
 Suites: trixie trixie-updates
@@ -371,6 +468,8 @@ URIs: http://security.debian.org/debian-security
 Suites: trixie-security
 Components:$missing
 EOF
+        if ! create_config "$tmp" /etc/apt/sources.list.d/nonfree.sources; then rm -f "$tmp"; return 1; fi
+        rm -f "$tmp"
     fi
     sudo apt-get update
     sudo apt-get install -y nvidia-driver firmware-misc-nonfree
@@ -381,13 +480,25 @@ EOF
 
 # Clone the repo if it is missing and link it onto PATH as setup-machine.
 install_repo() {
-    if [ ! -d "$REPO_DIR/.git" ]; then
+    if [ ! -e "$REPO_DIR/.git" ]; then
+        if [ -e "$REPO_DIR" ] || [ -L "$REPO_DIR" ]; then
+            echo "refusing to clone over existing path: $REPO_DIR" >&2
+            return 1
+        fi
         log "cloning $REPO_URL into $REPO_DIR"
         mkdir -p "$(dirname "$REPO_DIR")"
         git clone "$REPO_URL" "$REPO_DIR"
     fi
     mkdir -p "$HOME/.local/bin"
-    ln -sf "$REPO_DIR/scripts/setup.sh" "$HOME/.local/bin/setup-machine"
+    local launcher="$HOME/.local/bin/setup-machine"
+    if [ -L "$launcher" ] && [ "$(readlink "$launcher")" = "$REPO_DIR/scripts/setup.sh" ]; then
+        return 0
+    fi
+    if [ -e "$launcher" ] || [ -L "$launcher" ]; then
+        echo "preserving existing launcher: $launcher" >&2
+        return 0
+    fi
+    ln -s "$REPO_DIR/scripts/setup.sh" "$launcher"
 }
 
 # Fast-forward or clone the repo, link it and re-exec the fresh copy.
@@ -402,7 +513,16 @@ self_update() {
         log "git not installed yet, skipping self-update"
         return 0
     fi
-    if [ -d "$REPO_DIR/.git" ]; then
+    if [ -e "$REPO_DIR/.git" ]; then
+        local origin branch dirty
+        origin="$(git -C "$REPO_DIR" remote get-url origin)" || return 1
+        branch="$(git -C "$REPO_DIR" symbolic-ref --short -q HEAD)" || branch=""
+        dirty="$(git -C "$REPO_DIR" status --porcelain)" || return 1
+        if { [ "$origin" != "$REPO_URL" ] && [ "$origin" != "$REPO_URL.git" ]; } ||
+            [ "$branch" != main ] || [ -n "$dirty" ]; then
+            log "preserving existing checkout (different origin, branch, or local changes); skipping self-update"
+            return 0
+        fi
         log "updating $REPO_DIR"
         git -C "$REPO_DIR" pull --ff-only
     fi
@@ -413,6 +533,13 @@ self_update() {
 # A non-login shell (ssh host 'bash -s', cron) has neither ~/.local/bin nor
 # nvm, so the checks would call installed tools todo.
 tool_path() {
+    if [ "$OS" = macos ] && ! have brew; then
+        if [ -x /opt/homebrew/bin/brew ]; then
+            eval "$(/opt/homebrew/bin/brew shellenv)"
+        elif [ -x /usr/local/bin/brew ]; then
+            eval "$(/usr/local/bin/brew shellenv)"
+        fi
+    fi
     case ":$PATH:" in
         *":$HOME/.local/bin:"*) ;;
         *) export PATH="$HOME/.local/bin:$PATH" ;;
@@ -518,9 +645,9 @@ main() {
         return 0
     fi
     detect_os
-    self_update "$@"
-    tool_path
     select_steps
+    if [ "$OPT_STATUS" != 1 ]; then self_update "$@"; fi
+    tool_path
 
     local step rc status ran=""
     local todo=()
@@ -558,6 +685,10 @@ main() {
     # guard on BASH_SUBSHELL: only a failure in the main shell is a step failure.
     trap 'rc=$?; if [ "$BASH_SUBSHELL" != 0 ]; then :; elif [ "$rc" = 75 ]; then reboot_reminder "$ran"; exit 0; else echo "step failed: $step" >&2; reboot_reminder "$ran"; exit 1; fi' ERR
     for step in "${todo[@]}"; do
+        # Earlier steps can make later ones complete (or expose existing tools).
+        rc=0
+        "$(fname check "$step")" || rc=$?
+        if [ "$rc" = 0 ] || [ "$rc" = 2 ]; then continue; fi
         if [ "$OPT_YES" != 1 ] && ! prompt "$step" "$("$(fname default "$step")")"; then
             continue
         fi

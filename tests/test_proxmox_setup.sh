@@ -628,4 +628,95 @@ if run --yes --only repos >/dev/null 2>&1; then fail "managed unreadable key acc
 [ -z "$(calls)" ] || fail "managed unusable key invoked apt"
 unset KEY_DENY
 
+for layout in sources list; do
+    for ceph_state in absent source-only binary-and-source; do
+        fresh_apt bookworm
+        if [ "$layout" = sources ]; then
+            cat >"$A/public.sources" <<'EOF'
+Types: deb-src
+ deb
+URIs: http://download.proxmox.com/debian/pve
+Suites: bookworm
+Components: pve-no-subscription
+EOF
+            cat >"$A/ceph.sources" <<'EOF'
+Types: deb
+URIs: https://enterprise.proxmox.com/debian/ceph-squid
+Suites: bookworm
+Components: enterprise
+Enabled: false
+EOF
+            if [ "$ceph_state" != absent ]; then
+                types=deb-src
+                if [ "$ceph_state" = binary-and-source ]; then types='deb-src deb'; fi
+                cat >>"$A/public.sources" <<EOF
+
+Types: $types
+URIs: http://download.proxmox.com/debian/ceph-squid
+Suites: bookworm
+Components: no-subscription
+EOF
+            fi
+        else
+            printf 'deb http://download.proxmox.com/debian/pve bookworm pve-no-subscription\n' >"$A/public.list"
+            printf '# deb https://enterprise.proxmox.com/debian/ceph-squid bookworm enterprise\n' >"$A/ceph.list"
+            if [ "$ceph_state" != absent ]; then
+                printf 'deb-src http://download.proxmox.com/debian/ceph-squid bookworm no-subscription\n' >>"$A/public.list"
+            fi
+            if [ "$ceph_state" = binary-and-source ]; then
+                printf 'deb http://download.proxmox.com/debian/ceph-squid bookworm no-subscription\n' >>"$A/public.list"
+            fi
+        fi
+        cp "$A/public.$layout" "$F/public-before"
+        cp "$A/ceph.$layout" "$F/ceph-before"
+        if [ "$ceph_state" = binary-and-source ]; then
+            [ "$(status_of repos)" = done ] || fail "binary and source types not recognised: $layout"
+        else
+            [ "$(status_of repos)" = todo ] || fail "missing Ceph binary counted as done: $layout $ceph_state"
+            run --yes --only repos >/dev/null
+            cat >"$F/want" <<'EOF'
+Types: deb
+URIs: http://download.proxmox.com/debian/ceph-squid
+Suites: bookworm
+Components: no-subscription
+Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
+EOF
+            cmp -s "$F/want" "$A/pve-no-subscription.sources" || fail "missing Ceph binary not added: $layout $ceph_state"
+            calls | grep -qx 'apt-get update' || fail "Ceph binary remediation skipped apt"
+        fi
+        cmp -s "$F/public-before" "$A/public.$layout" || fail "existing public entries changed"
+        cmp -s "$F/ceph-before" "$A/ceph.$layout" || fail "disabled Ceph entry changed"
+        assert_repos_rerun
+        if [ "$ceph_state" = binary-and-source ]; then
+            [ ! -e "$A/pve-no-subscription.sources" ] || fail "mixed binary/source entry duplicated"
+        fi
+    done
+
+    fresh_apt bookworm
+    keyring_enterprise_fixture bookworm
+    if [ "$layout" = sources ]; then
+        cat >"$A/public.sources" <<'EOF'
+Types: deb-src
+URIs: http://download.proxmox.com/debian/pve
+Suites: bookworm
+Components: pve-no-subscription
+
+Types: deb-src
+URIs: http://download.proxmox.com/debian/ceph-reef
+Suites: bookworm
+Components: no-subscription
+EOF
+    else
+        printf 'deb-src http://download.proxmox.com/debian/pve bookworm pve-no-subscription\ndeb-src http://download.proxmox.com/debian/ceph-reef bookworm no-subscription\n' >"$A/public.list"
+    fi
+    cp "$A/public.$layout" "$F/public-before"
+    run --yes --only repos >/dev/null
+    expected_keyring_sources "$ARCHIVE_KEY" >"$F/want"
+    cmp -s "$F/want" "$A/pve-no-subscription.sources" || fail "deb-src prevented binary replacement: $layout"
+    cmp -s "$F/public-before" "$A/public.$layout" || fail "source-only entries changed"
+    assert_repos_rerun
+    rm "$A/pve-no-subscription.sources"
+    [ "$(status_of repos)" = todo ] || fail "source-only PVE counted as binary: $layout"
+done
+
 echo "ok: proxmox_setup.sh behaviour"

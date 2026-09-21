@@ -65,33 +65,59 @@ turns those off and turns on `pve-no-subscription`, for the suite in `/etc/os-re
   keeping the rest of the file
 - writes `/etc/apt/sources.list.d/pve-no-subscription.sources`, plus a Ceph
   `no-subscription` stanza for the same Ceph release when a Ceph enterprise repo was there,
-  unless an enabled source already provides it
+  unless an enabled binary (`deb`) source already provides it
 - runs `apt-get update`
 
 It never touches `debian.sources` or `sources.list`. Proxmox does not recommend
 `pve-no-subscription` for production; with a subscription, re-enable the enterprise repos.
 The web UI's "no valid subscription" dialog is separate and stays.
 
-By hand on PVE 9 (Datacenter → pve1 → Updates → Repositories in the web UI does the same):
+The step prefers the installed `/usr/share/keyrings/proxmox-archive-keyring.gpg`.
+On Bookworm only, it can fall back to the installed
+`/etc/apt/trusted.gpg.d/proxmox-release-bookworm.gpg`. The selected keyring must be
+nonempty and readable by `_apt`; otherwise the step refuses before changing sources.
+It downloads no keys and repairs the `Signed-By` fields of its managed stanzas in place.
 
+For a manual equivalent, first select and check the installed keyring in a root Bash
+shell, before editing any sources:
+
+```bash
+suite=$( . /etc/os-release; printf '%s' "$VERSION_CODENAME" )
+key=/usr/share/keyrings/proxmox-archive-keyring.gpg
+if ! { [ -f "$key" ] && [ -s "$key" ] && runuser -u _apt -- test -r "$key"; }; then
+    [ "$suite" = bookworm ] || { echo 'No usable archive keyring'; exit 1; }
+    key=/etc/apt/trusted.gpg.d/proxmox-release-bookworm.gpg
+fi
+[ -f "$key" ] && [ -s "$key" ] && runuser -u _apt -- test -r "$key" || exit 1
 ```
-echo 'Enabled: false' >> /etc/apt/sources.list.d/pve-enterprise.sources
-echo 'Enabled: false' >> /etc/apt/sources.list.d/ceph.sources
-cat > /etc/apt/sources.list.d/pve-no-subscription.sources <<EOF
+
+Inspect the existing sources first. Leave `debian.sources` and `sources.list` unchanged;
+if either contains an enabled enterprise entry, the automated step refuses this layout.
+On PVE 9, set `Enabled: false` in each enterprise stanza in `pve-enterprise.sources`
+and `ceph.sources`, replacing an existing `Enabled` field if present. On PVE 8, comment
+out the enterprise `deb` and `deb-src` lines in `pve-enterprise.list` and `ceph.list`.
+Preserve unrelated entries.
+
+If no enabled binary PVE no-subscription source exists, add this stanza to
+`/etc/apt/sources.list.d/pve-no-subscription.sources`, using the selected values
+(the command below prints the stanza for copying):
+
+```bash
+cat <<EOF
 Types: deb
 URIs: http://download.proxmox.com/debian/pve
-Suites: $(. /etc/os-release; echo "$VERSION_CODENAME")
+Suites: $suite
 Components: pve-no-subscription
-Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
+Signed-By: $key
 EOF
-apt update
 ```
 
-Each of those files holds a single stanza on a fresh install, so appending is enough;
-check first with `cat`. If you use Ceph, add a second stanza with
-`URIs: http://download.proxmox.com/debian/ceph-<release>` (the release the enterprise entry
-named) and `Components: no-subscription`. On PVE 8, put `#` in front of the `deb` line in
-`pve-enterprise.list` and `ceph.list` instead.
+Separate stanzas with a blank line. If a Ceph enterprise source was present, add a
+matching binary stanza with `URIs: http://download.proxmox.com/debian/ceph-<release>`,
+`Components: no-subscription`, and the same suite and selected keyring, unless that
+binary source already exists. Prefer the active enterprise release over disabled
+historical entries. If a previously generated stanza names a missing keyring, update
+its `Signed-By` field rather than adding a duplicate. Finally run `apt-get update`.
 
 ## SSH
 

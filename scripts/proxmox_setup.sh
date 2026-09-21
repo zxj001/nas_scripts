@@ -104,7 +104,8 @@ source_file() {
             return 0
         }
         function field() {
-            if (k == "uris") u = v
+            if (k == "types") types = v
+            else if (k == "uris") u = v
             else if (k == "suites") s = v
             else if (k == "components") c = v
             else if (k == "signed-by") signed = v
@@ -118,7 +119,7 @@ source_file() {
                  (u ~ /^http:\/\/download\.proxmox\.com\/debian\/ceph-[a-z]+\/?$/ && c == "no-subscription")))
             repair = (mode == "keyring" && en && managed && signed != key)
             if (mode == "read") {
-                if (u != "") print u "|" s "|" c "|" en "|" ent "|" signed "|" managed
+                if (u != "") print u "|" s "|" c "|" en "|" ent "|" signed "|" managed "|" types
             } else {
                 skip = 0
                 for (i = 1; i <= n; i++) {
@@ -135,7 +136,7 @@ source_file() {
                 if (mode == "disable" && ent && en) print "Enabled: false"
                 if (repair && !wrote) print "Signed-By: " key
             }
-            u = s = c = k = v = signed = ""; en = 1; n = 0
+            u = s = c = k = v = signed = types = ""; en = 1; n = 0
         }
         BEGIN { en = 1 }
         deb822 != "sources" {
@@ -146,7 +147,7 @@ source_file() {
                 sub(/\[[^]]*\][[:space:]]*/, "")
                 c = ""; for (i = 4; i <= NF; i++) c = c (c == "" ? "" : " ") $i
                 ent = enterprise($2)
-                if (mode == "read") print $2 "|" $3 "|" c "|" en "|" ent
+                if (mode == "read") print $2 "|" $3 "|" c "|" en "|" ent "|||" $1
                 else if (en && ent) raw = "# " raw
             }
             if (mode != "read") print raw
@@ -190,7 +191,7 @@ ceph_releases() {
                   if ($4) active[uris[i]] = 1
                   else disabled[uris[i]] = 1
               }
-              if ($4 && current && uris[i] ~ /^http:\/\/download\.proxmox\.com\/debian\/ceph-[a-z]+\/?$/ &&
+              if ($4 && current && $8 ~ /(^|[[:space:]])deb([[:space:]]|$)/ && uris[i] ~ /^http:\/\/download\.proxmox\.com\/debian\/ceph-[a-z]+\/?$/ &&
                   $3 ~ /(^|[[:space:]])no-subscription([[:space:]]|$)/) replacement = 1
           } }
         END {
@@ -207,7 +208,7 @@ has_source() {
           for (i = 1; i <= n; i++) { x = us[i]; sub(/\/$/, "", x); if (x == u) hu = 1 }
           for (i in ss) if (ss[i] == s) hs = 1
           for (i in cs) if (cs[i] == c) hc = 1
-          if (hu && hs && hc) found = 1 }
+          if (hu && hs && hc && $8 ~ /(^|[[:space:]])deb([[:space:]]|$)/) found = 1 }
         END { exit !found }'
 }
 
@@ -220,12 +221,18 @@ managed_keyring_matches() {
 # apt update fails with 401 until they are off. Done when none is enabled and
 # pve-no-subscription is, for the running suite.
 check_repos() {
-    local srcs key
+    local srcs key suite releases ceph
     key="$(repo_keyring)" || return 1
     managed_keyring_matches "$key" || return 1
     srcs="$(enabled_sources)"
-    ! has_enterprise <<<"$srcs" &&
-        has_source http://download.proxmox.com/debian/pve "$(codename)" pve-no-subscription
+    ! has_enterprise <<<"$srcs" || return 1
+    suite="$(codename)"
+    has_source http://download.proxmox.com/debian/pve "$suite" pve-no-subscription || return 1
+    releases="$(ceph_releases)" || return 1
+    for ceph in $releases; do
+        has_source "http://download.proxmox.com/debian/ceph-$ceph" "$suite" no-subscription || return 1
+    done
+    return 0
 }
 default_repos() { echo yes; }
 do_repos() {

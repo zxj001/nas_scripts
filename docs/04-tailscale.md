@@ -5,6 +5,8 @@ Automated by `setup-machine --only tailscale` (the iPhone side stays manual).
 Tailscale gives the phone a private, encrypted route to the machine without opening ports
 on the router.
 
+On the Proxmox host itself, see [pve-host.md](pve-host.md).
+
 ## On the machine
 
 ```

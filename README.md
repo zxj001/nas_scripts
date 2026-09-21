@@ -11,6 +11,7 @@ Helpers live in `scripts/`. Run them from the repo root, e.g.
 | Script | Purpose |
 |--------|---------|
 | `scripts/setup.sh` | Set up a Debian 13 or macOS machine the way [docs/](docs/README.md) describes; `--status` shows what is left to do |
+| `scripts/proxmox_setup.sh` | The same for the Proxmox VE host: root SSH keys, SSH hardening, Tailscale, optional subnet router ([docs/pve-host.md](docs/pve-host.md)) |
 | `scripts/disk_check.py` | Disk space on the Plex folders' drives plus drive health; exits 1 if anything needs attention (cron-friendly) |
 | `scripts/find_largest_files.py` | List the largest files under the Plex folders (or given directories) |
 | `scripts/defrag.py` | Find the most fragmented files using `filefrag`; `--defrag` runs `e4defrag` on them |
@@ -40,7 +41,7 @@ Current:
 | Host | Address | Access | Role |
 |------|---------|--------|------|
 | `debianbeelink` | 192.168.1.126 | `ssh jasonz001@…` port 22 | Plex (:32400), Docker, GitHub runners |
-| `pve1.home.arpa` | 192.168.1.203 | https :8006, `ssh` port 22 | Proxmox VE host |
+| `pve1.home.arpa` | 192.168.1.203 (Tailscale: TODO fill in from `tailscale ip -4`) | https :8006, `ssh` port 22 | Proxmox VE host |
 | `debian-xfce` | 192.168.1.133 (Tailscale 100.74.143.43) | `ssh zhangxienjie@…` port 22 | Debian desktop node, also on the tailnet |
 | IPMI (Supermicro) | 192.168.1.118 | web UI, https | Out-of-band console for the Proxmox chassis |
 | Router (AT&T) | 192.168.1.254 | web UI | Gateway, DHCP, address reservations |
@@ -183,6 +184,10 @@ https://192.168.1.203:8006
 // shell
 ssh root@192.168.1.203
 ```
+
+SSH hardening (root by key only) and Tailscale on the host: see
+[docs/pve-host.md](docs/pve-host.md), automated by `scripts/proxmox_setup.sh`. Do not run
+`setup-machine` here.
 
 ### debian-xfce
 

@@ -39,6 +39,7 @@ script does, for doing it by hand or fixing one step.
 | 6 | Codex, Pi, Claude Code, FirstMate | [06-agent-clis.md](06-agent-clis.md) |
 | 7 | Herdr for persistent agent sessions | [07-herdr.md](07-herdr.md) |
 | - | Optional: pass the GT 1030 through to the VM **(VM)** | [gpu-passthrough.md](gpu-passthrough.md) |
+| - | SSH and Tailscale on the Proxmox host itself **(host)** | [pve-host.md](pve-host.md) |
 
 When you're done, add the machine to [Local Machines](../README.md#local-machines).
 

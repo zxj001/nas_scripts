@@ -17,7 +17,9 @@ curl -fsSL https://raw.githubusercontent.com/zxj001/nas_scripts/main/scripts/set
 ```
 
 It clones this repo to `~/tools/nas_scripts` and links it as `~/.local/bin/setup-machine`.
-Rerun it any time; steps already done are skipped:
+On a box without git (a fresh Debian 13 install) the first run skips that clone and link,
+since git arrives with the dev-tools step; run the curl line once more afterwards to get
+the repo and the `setup-machine` command. Rerun it any time; steps already done are skipped:
 
 ```
 setup-machine            # offer each step that is not done yet
@@ -25,7 +27,8 @@ setup-machine --status   # just show what is done and what is left
 ```
 
 It ends by listing the sign-ins it can't do for you (`gh auth login`, `codex`, `pi`,
-`claude`). The steps below are what the script does, for doing it by hand or fixing one step.
+`claude`, and on macOS Tailscale.app: open it and sign in). The steps below are what the
+script does, for doing it by hand or fixing one step.
 
 | # | Step | Doc |
 |---|------|-----|

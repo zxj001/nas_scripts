@@ -77,48 +77,98 @@ require_pve() {
 # Debian codename of the running system (trixie on PVE 9, bookworm on PVE 8).
 codename() { sed -n 's/^VERSION_CODENAME=//p' "$OS_RELEASE" | tr -d '"'; }
 
-# Every enabled apt source in sources.list.d, one "uris|suites|components"
-# line each, from deb822 .sources stanzas and one-line .list entries.
-# ponytail: sources.list itself is not read; nothing PVE adds goes there.
-enabled_sources() {
+source_file() {
+    local mode="$1" file="$2"
+    [ -f "$file" ] || return 0
+    awk -v mode="$mode" -v deb822="${file##*.}" '
+        function enterprise(uris,    items, count, i) {
+            count = split(uris, items, " ")
+            for (i = 1; i <= count; i++)
+                if (items[i] ~ /^https?:\/\/enterprise\.proxmox\.com([\/:]|$)/) return 1
+            return 0
+        }
+        function field() {
+            if (k == "uris") u = v
+            else if (k == "suites") s = v
+            else if (k == "components") c = v
+            else if (k == "enabled") en = (tolower(v) !~ /^(no|false|off|0|disable)/)
+        }
+        function flush(    i, skip, ent) {
+            field()
+            ent = enterprise(u)
+            if (mode == "read") {
+                if (u != "") print u "|" s "|" c "|" en "|" ent
+            } else {
+                skip = 0
+                for (i = 1; i <= n; i++) {
+                    if (buf[i] ~ /^[[:space:]]*#/) { print buf[i]; continue }
+                    if (buf[i] !~ /^[[:space:]]/) skip = (ent && en && tolower(buf[i]) ~ /^enabled[[:space:]]*:/)
+                    if (!skip) print buf[i]
+                }
+                if (ent && en) print "Enabled: false"
+            }
+            u = s = c = k = v = ""; en = 1; n = 0
+        }
+        BEGIN { en = 1 }
+        deb822 != "sources" {
+            raw = $0; en = 1
+            if (sub(/^[[:space:]]*#[[:space:]]*/, "")) en = 0
+            sub(/#.*/, "")
+            if ($0 ~ /^[[:space:]]*deb(-src)?[[:space:]]/) {
+                sub(/\[[^]]*\][[:space:]]*/, "")
+                c = ""; for (i = 4; i <= NF; i++) c = c (c == "" ? "" : " ") $i
+                ent = enterprise($2)
+                if (mode == "read") print $2 "|" $3 "|" c "|" en "|" ent
+                else if (en && ent) raw = "# " raw
+            }
+            if (mode != "read") print raw
+            next
+        }
+        /^[[:space:]]*$/ { flush(); if (mode != "read") print; next }
+        { buf[++n] = $0 }
+        /^[[:space:]]*#/ { next }
+        /^[[:space:]]/ {
+            sub(/^[[:space:]]+/, "")
+            v = v (v == "" ? "" : " ") $0
+            next
+        }
+        {
+            field()
+            k = tolower($0); sub(/[[:space:]]*:.*/, "", k)
+            v = $0; sub(/^[^:]*:[[:space:]]*/, "", v)
+        }
+        END { if (deb822 == "sources") flush() }' "$file"
+}
+
+all_sources() {
     local f
-    for f in "$APT_DIR"/*.sources; do
-        [ -f "$f" ] || continue
-        awk '
-            function field() {
-                if (k == "uris") u = v
-                else if (k == "suites") s = v
-                else if (k == "components") c = v
-                else if (k == "enabled") en = (tolower(v) !~ /^(no|false|off|0|disable)/)
-            }
-            function flush() {
-                field()
-                if (u != "" && en) print u "|" s "|" c
-                u = s = c = k = v = ""; en = 1
-            }
-            BEGIN { en = 1 }
-            /^[[:space:]]*#/ { next }
-            /^[[:space:]]*$/ { flush(); next }
-            /^[[:space:]]/ {
-                sub(/^[[:space:]]+/, "")
-                v = v (v == "" ? "" : " ") $0
-                next
-            }
-            {
-                field()
-                k = tolower($0); sub(/[[:space:]]*:.*/, "", k)
-                v = $0; sub(/^[^:]*:[[:space:]]*/, "", v)
-            }
-            END { flush() }' "$f"
+    for f in "$APT_DIR"/*.sources "$APT_DIR"/*.list "$P/etc/apt/sources.list"; do
+        source_file read "$f"
     done
-    for f in "$APT_DIR"/*.list; do
-        [ -f "$f" ] || continue
-        awk '/^[[:space:]]*deb(-src)?[[:space:]]/ {
-                 sub(/\[[^]]*\][[:space:]]*/, "")
-                 c = ""; for (i = 4; i <= NF; i++) c = c (c == "" ? "" : " ") $i
-                 print $2 "|" $3 "|" c
-             }' "$f"
-    done
+}
+
+enabled_sources() { all_sources | awk -F'|' '$4'; }
+
+has_enterprise() { awk -F'|' '$4 && $5 { found = 1 } END { exit !found }'; }
+
+ceph_releases() {
+    all_sources | awk -F'|' -v suite="$(codename)" '
+        { n = split($1, uris, " ")
+          split($2, suites, " "); current = 0
+          for (j in suites) if (suites[j] == suite) current = 1
+          for (i = 1; i <= n; i++) {
+              if (uris[i] ~ /^https?:\/\/enterprise\.proxmox\.com\/debian\/ceph-[a-z]+\/?$/) {
+                  sub(/.*ceph-/, "", uris[i]); sub(/\/$/, "", uris[i])
+                  if ($4) active[uris[i]] = 1
+                  else disabled[uris[i]] = 1
+              }
+              if ($4 && current && uris[i] ~ /^http:\/\/download\.proxmox\.com\/debian\/ceph-[a-z]+\/?$/ &&
+                  $3 ~ /(^|[[:space:]])no-subscription([[:space:]]|$)/) replacement = 1
+          } }
+        END {
+            for (release in active) { print release; found = 1 }
+            if (!found && !replacement) for (release in disabled) print release
+        }' | sort
 }
 
 # Is an enabled source for $1 (URI) with suite $2 and component $3 there?
@@ -137,11 +187,9 @@ has_source() {
 # apt update fails with 401 until they are off. Done when none is enabled and
 # pve-no-subscription is, for the running suite.
 check_repos() {
-    # Captured first: under pipefail an early-exiting grep -q can SIGPIPE the
-    # producer, and a negated failed pipeline would read as done.
     local srcs
     srcs="$(enabled_sources)"
-    ! grep -q 'enterprise\.proxmox\.com' <<<"$srcs" &&
+    ! has_enterprise <<<"$srcs" &&
         has_source http://download.proxmox.com/debian/pve "$(codename)" pve-no-subscription
 }
 default_repos() { echo yes; }
@@ -152,42 +200,18 @@ do_repos() {
         echo "no VERSION_CODENAME in $OS_RELEASE" >&2
         return 1
     fi
-    # The Ceph release (squid, reef, ...) as the enterprise entry names it.
-    releases="$(enabled_sources | awk -F'|' '
-        { n = split($1, uris, " ")
-          for (i = 1; i <= n; i++)
-              if (uris[i] ~ /^https?:\/\/enterprise\.proxmox\.com\/debian\/ceph-[a-z]+\/?$/) {
-                  sub(/.*ceph-/, "", uris[i]); sub(/\/$/, "", uris[i])
-                  if (!seen[uris[i]]++) print uris[i]
-              } }')"
-    # Disable in place: Enabled: false on each enterprise stanza, the rest of
-    # the file as it was. Rewritten through cat so owner and mode stay.
-    for f in "$APT_DIR"/*.sources; do
-        [ -f "$f" ] || continue
-        grep -q 'enterprise\.proxmox\.com' "$f" || continue
-        tmp="$(mktemp)"
-        awk '
-            function flush(   i, skip) {
-                skip = 0
-                for (i = 1; i <= n; i++) {
-                    if (buf[i] ~ /^[[:space:]]*#/) { print buf[i]; continue }
-                    if (buf[i] !~ /^[[:space:]]/) skip = (ent && tolower(buf[i]) ~ /^enabled[[:space:]]*:/)
-                    if (!skip) print buf[i]
-                }
-                if (ent) print "Enabled: false"
-                n = ent = 0
-            }
-            /^[[:space:]]*$/ { flush(); print; next }
-            { buf[++n] = $0; if ($0 !~ /^[[:space:]]*#/ && /enterprise\.proxmox\.com/) ent = 1 }
-            END { flush() }' "$f" >"$tmp"
-        cmp -s "$tmp" "$f" || cat "$tmp" >"$f"
-        rm -f "$tmp"
+    for f in "$APT_DIR/debian.sources" "$P/etc/apt/sources.list"; do
+        if source_file read "$f" | has_enterprise; then
+            echo "unsupported enterprise repository in protected file: $f" >&2
+            return 1
+        fi
     done
-    for f in "$APT_DIR"/*.list; do
-        [ -f "$f" ] || continue
-        if grep -Eq '^[[:space:]]*deb(-src)?[[:space:]].*enterprise\.proxmox\.com' "$f"; then
+    releases="$(ceph_releases)"
+    for f in "$APT_DIR"/*.sources "$APT_DIR"/*.list; do
+        [ "$f" != "$APT_DIR/debian.sources" ] || continue
+        if source_file read "$f" | has_enterprise; then
             tmp="$(mktemp)"
-            sed -E 's/^([[:space:]]*deb(-src)?[[:space:]].*enterprise\.proxmox\.com)/# \1/' "$f" >"$tmp"
+            source_file disable "$f" >"$tmp"
             cat "$tmp" >"$f"
             rm -f "$tmp"
         fi

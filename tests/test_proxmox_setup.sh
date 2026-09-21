@@ -166,7 +166,7 @@ echo '{"AdvertiseRoutes":null,"Note":"192.168.1.0/24"}' >"$F/prefs.json"
 # --- repos --------------------------------------------------------------------
 A="$F/etc/apt/sources.list.d"
 mkdir -p "$A"
-snapshot() { cat "$F/etc/os-release" "$A"/* 2>/dev/null | cksum; }
+snapshot() { cat "$F/etc/os-release" "$F/etc/apt/sources.list" "$A"/* 2>/dev/null | cksum; }
 fresh_apt() {
     rm -rf "$A" "$F/calls"
     mkdir -p "$A"
@@ -418,6 +418,117 @@ EOF
 run --yes --only repos >/dev/null
 cmp -s "$F/want" "$A/pve-no-subscription.sources" || fail "appended stanza not separated from unterminated content"
 [ "$(status_of repos)" = done ] || fail "appended stanza remains disabled"
+assert_repos_rerun
+
+for layout in sources list; do
+    fresh_apt bookworm
+    printf 'deb https://enterprise.proxmox.com/debian/pve bookworm pve-enterprise\n' >"$A/pve-enterprise.list"
+    if [ "$layout" = sources ]; then
+        cat >"$A/ceph.sources" <<'EOF'
+Types: deb
+URIs:
+ https://enterprise.proxmox.com/debian/ceph-reef
+Suites: bookworm
+Components: enterprise
+Enabled: false
+EOF
+    else
+        printf '# deb [signed-by=/keyring] https://enterprise.proxmox.com/debian/ceph-reef bookworm enterprise # disabled\n' >"$A/ceph.list"
+    fi
+    cp "$A/ceph.$layout" "$F/disabled-ceph"
+    run --yes --only repos >/dev/null
+    cmp -s "$F/disabled-ceph" "$A/ceph.$layout" || fail "disabled Ceph $layout changed"
+    cat >"$F/want" <<'EOF'
+Types: deb
+URIs: http://download.proxmox.com/debian/pve
+Suites: bookworm
+Components: pve-no-subscription
+Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
+
+Types: deb
+URIs: http://download.proxmox.com/debian/ceph-reef
+Suites: bookworm
+Components: no-subscription
+Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
+EOF
+    cmp -s "$F/want" "$A/pve-no-subscription.sources" || fail "disabled Ceph $layout fallback missing"
+    assert_repos_rerun
+done
+
+for protected in debian.sources sources.list; do
+    fresh_apt trixie
+    printf 'deb https://enterprise.proxmox.com/debian/pve trixie pve-enterprise\n' >"$A/pve-enterprise.list"
+    printf 'deb http://download.proxmox.com/debian/pve trixie pve-no-subscription\n' >"$A/public.list"
+    if [ "$protected" = debian.sources ]; then
+        cat >>"$A/debian.sources" <<'EOF'
+
+Types: deb
+URIs:
+ https://enterprise.proxmox.com/debian/pve
+Suites: trixie
+Components: pve-enterprise
+EOF
+    else
+        printf 'deb [arch=amd64] https://enterprise.proxmox.com/debian/pve trixie pve-enterprise\n' >>"$F/etc/apt/sources.list"
+    fi
+    before="$(snapshot)"
+    if run --yes --only repos >"$F/output" 2>&1; then fail "protected $protected layout accepted"; fi
+    grep -q 'unsupported enterprise repository in protected file:' "$F/output" || fail "protected layout not explained"
+    [ "$(snapshot)" = "$before" ] || fail "source mutation before protected $protected refusal"
+    [ -z "$(calls)" ] || fail "apt called for protected $protected layout"
+    rm "$A/pve-enterprise.list"
+    [ "$(status_of repos)" = todo ] || fail "enterprise in protected $protected missed by check"
+    before="$(snapshot)"
+    if HARNESS_CALL=do_repos run >/dev/null 2>&1; then fail "direct call accepted protected $protected"; fi
+    [ "$(snapshot)" = "$before" ] || fail "direct call changed protected layout"
+    [ -z "$(calls)" ] || fail "direct call ran apt for protected layout"
+done
+
+fresh_apt trixie
+cat >>"$A/debian.sources" <<'EOF'
+
+Types: deb
+URIs: https://enterprise.proxmox.com/debian/pve
+Suites: trixie
+Components: pve-enterprise
+Enabled: no
+EOF
+printf '# deb https://enterprise.proxmox.com/debian/pve trixie pve-enterprise\n' >>"$F/etc/apt/sources.list"
+cp "$A/debian.sources" "$F/protected-debian"
+cp "$F/etc/apt/sources.list" "$F/protected-list"
+printf 'deb https://enterprise.proxmox.com/debian/pve trixie pve-enterprise\n' >"$A/pve-enterprise.list"
+run --yes --only repos >/dev/null
+cmp -s "$F/protected-debian" "$A/debian.sources" || fail "disabled protected deb822 changed"
+cmp -s "$F/protected-list" "$F/etc/apt/sources.list" || fail "disabled protected list changed"
+assert_repos_rerun
+
+fresh_apt bookworm
+cat >"$A/unrelated.list" <<'EOF'
+deb [arch=amd64] http://deb.debian.org/debian bookworm main # https://enterprise.proxmox.com/debian/ceph-reef configured separately
+# Historical URI: https://enterprise.proxmox.com/debian/ceph-squid
+deb http://download.proxmox.com/debian/pve bookworm main # pve-no-subscription
+EOF
+cat >"$A/unrelated.sources" <<'EOF'
+Types: deb
+URIs: https://mirror.example.org/other
+Suites: bookworm
+Components: main
+Description: enterprise.proxmox.com is configured separately
+EOF
+cp "$A/unrelated.list" "$F/unrelated-list"
+cp "$A/unrelated.sources" "$F/unrelated-sources"
+[ "$(status_of repos)" = todo ] || fail "inline component comment counted as source"
+printf 'deb http://download.proxmox.com/debian/pve bookworm pve-no-subscription\n' >"$A/public.list"
+[ "$(status_of repos)" = done ] || fail "enterprise comment counted as enabled source"
+printf 'deb [signed-by=/keyring] https://enterprise.proxmox.com/debian/pve bookworm pve-enterprise # keep note\n' >"$A/pve-enterprise.list"
+cat "$F/unrelated-list" >>"$A/pve-enterprise.list"
+run --yes --only repos >/dev/null
+cmp -s "$F/unrelated-list" "$A/unrelated.list" || fail "unrelated list entry or comment changed"
+cmp -s "$F/unrelated-sources" "$A/unrelated.sources" || fail "unrelated deb822 field changed"
+[ ! -e "$A/pve-no-subscription.sources" ] || fail "comment URI caused a replacement source"
+printf '# deb [signed-by=/keyring] https://enterprise.proxmox.com/debian/pve bookworm pve-enterprise # keep note\n' >"$F/want"
+cat "$F/unrelated-list" >>"$F/want"
+cmp -s "$F/want" "$A/pve-enterprise.list" || fail "enterprise URI not disabled with options and inline comment"
 assert_repos_rerun
 
 echo "ok: proxmox_setup.sh behaviour"

@@ -85,17 +85,29 @@ enabled_sources() {
     for f in "$APT_DIR"/*.sources; do
         [ -f "$f" ] || continue
         awk '
-            function flush() { if (u != "" && en) print u "|" s "|" c; u = s = c = ""; en = 1 }
-            BEGIN { en = 1 }
-            /^[[:space:]]*#/ { next }
-            /^[[:space:]]*$/ { flush(); next }
-            {
-                k = tolower($0); sub(/[[:space:]]*:.*/, "", k)
-                v = $0; sub(/^[^:]*:[[:space:]]*/, "", v)
+            function field() {
                 if (k == "uris") u = v
                 else if (k == "suites") s = v
                 else if (k == "components") c = v
                 else if (k == "enabled") en = (tolower(v) !~ /^(no|false|off|0|disable)/)
+            }
+            function flush() {
+                field()
+                if (u != "" && en) print u "|" s "|" c
+                u = s = c = k = v = ""; en = 1
+            }
+            BEGIN { en = 1 }
+            /^[[:space:]]*#/ { next }
+            /^[[:space:]]*$/ { flush(); next }
+            /^[[:space:]]/ {
+                sub(/^[[:space:]]+/, "")
+                v = v (v == "" ? "" : " ") $0
+                next
+            }
+            {
+                field()
+                k = tolower($0); sub(/[[:space:]]*:.*/, "", k)
+                v = $0; sub(/^[^:]*:[[:space:]]*/, "", v)
             }
             END { flush() }' "$f"
     done
@@ -134,15 +146,20 @@ check_repos() {
 }
 default_repos() { echo yes; }
 do_repos() {
-    local suite f tmp ceph new=""
+    local suite f tmp ceph releases new=""
     suite="$(codename)"
     if [ -z "$suite" ]; then
         echo "no VERSION_CODENAME in $OS_RELEASE" >&2
         return 1
     fi
     # The Ceph release (squid, reef, ...) as the enterprise entry names it.
-    ceph="$(cat "$APT_DIR"/*.sources "$APT_DIR"/*.list 2>/dev/null |
-        grep -oE 'enterprise\.proxmox\.com/debian/ceph-[a-z]+' | head -n1 | sed 's/.*ceph-//' || true)"
+    releases="$(enabled_sources | awk -F'|' '
+        { n = split($1, uris, " ")
+          for (i = 1; i <= n; i++)
+              if (uris[i] ~ /^https?:\/\/enterprise\.proxmox\.com\/debian\/ceph-[a-z]+\/?$/) {
+                  sub(/.*ceph-/, "", uris[i]); sub(/\/$/, "", uris[i])
+                  if (!seen[uris[i]]++) print uris[i]
+              } }')"
     # Disable in place: Enabled: false on each enterprise stanza, the rest of
     # the file as it was. Rewritten through cat so owner and mode stay.
     for f in "$APT_DIR"/*.sources; do
@@ -150,9 +167,13 @@ do_repos() {
         grep -q 'enterprise\.proxmox\.com' "$f" || continue
         tmp="$(mktemp)"
         awk '
-            function flush(   i) {
-                for (i = 1; i <= n; i++)
-                    if (!(ent && tolower(buf[i]) ~ /^enabled[[:space:]]*:/)) print buf[i]
+            function flush(   i, skip) {
+                skip = 0
+                for (i = 1; i <= n; i++) {
+                    if (buf[i] ~ /^[[:space:]]*#/) { print buf[i]; continue }
+                    if (buf[i] !~ /^[[:space:]]/) skip = (ent && tolower(buf[i]) ~ /^enabled[[:space:]]*:/)
+                    if (!skip) print buf[i]
+                }
                 if (ent) print "Enabled: false"
                 n = ent = 0
             }
@@ -181,18 +202,21 @@ Components: pve-no-subscription
 Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
 "
     fi
-    if [ -n "$ceph" ] && ! has_source "http://download.proxmox.com/debian/ceph-$ceph" "$suite" no-subscription; then
-        new="${new:+$new
+    for ceph in $releases; do
+        if ! has_source "http://download.proxmox.com/debian/ceph-$ceph" "$suite" no-subscription; then
+            new="${new:+$new
 }Types: deb
 URIs: http://download.proxmox.com/debian/ceph-$ceph
 Suites: $suite
 Components: no-subscription
 Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
 "
-    fi
+        fi
+    done
     if [ -n "$new" ]; then
         f="$APT_DIR/pve-no-subscription.sources"
         if [ -s "$f" ]; then new="
+
 $new"; fi
         printf '%s' "$new" >>"$f"
     fi

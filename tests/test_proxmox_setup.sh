@@ -271,4 +271,153 @@ printf 'Types: deb\nURIs: http://download.proxmox.com/debian/pve/\nSuites: trixi
 HARNESS_CALL=do_repos run >/dev/null
 [ ! -e "$A/pve-no-subscription.sources" ] || fail "duplicate no-subscription repo written"
 
+assert_repos_rerun() {
+    local before
+    before="$(snapshot)"
+    rm -f "$F/calls"
+    run --yes --only repos >/dev/null
+    [ -z "$(calls)" ] || fail "completed repos step reran"
+    HARNESS_CALL=do_repos run >/dev/null
+    [ "$(snapshot)" = "$before" ] || fail "repos rerun changed source content"
+    [ "$(status_of repos)" = done ] || fail "repos rerun did not remain done"
+}
+
+fresh_apt trixie
+cat >"$A/proxmox.sources" <<'EOF'
+Types: deb
+URIs:
+ http://download.proxmox.com/debian/pve
+Suites:
+ trixie
+Components:
+ pve-no-subscription
+Enabled:
+ yes
+EOF
+cp "$A/proxmox.sources" "$F/continued-public"
+[ "$(status_of repos)" = done ] || fail "continued no-subscription fields not recognised"
+cat >"$A/pve-enterprise.sources" <<'EOF'
+# installer source
+Types: deb
+URIs:
+ https://enterprise.proxmox.com/debian/pve
+Suites:
+ trixie
+Components:
+ pve-enterprise
+Enabled:
+ yes
+EOF
+[ "$(status_of repos)" = todo ] || fail "continued enterprise URI missed"
+run --yes --only repos >/dev/null
+calls | grep -qx 'apt-get update' || fail "continued enterprise source skipped remediation"
+cat >"$F/want" <<'EOF'
+# installer source
+Types: deb
+URIs:
+ https://enterprise.proxmox.com/debian/pve
+Suites:
+ trixie
+Components:
+ pve-enterprise
+Enabled: false
+EOF
+cmp -s "$F/want" "$A/pve-enterprise.sources" || fail "continued enterprise fields not preserved or disabled"
+cmp -s "$F/continued-public" "$A/proxmox.sources" || fail "continued public source changed"
+[ ! -e "$A/pve-no-subscription.sources" ] || fail "continued public source duplicated"
+[ "$(status_of repos)" = done ] || fail "continued enterprise source remains enabled"
+assert_repos_rerun
+
+for layout in sources list; do
+    fresh_apt trixie
+    if [ "$layout" = sources ]; then
+        cat >"$A/ceph.sources" <<'EOF'
+# deb https://enterprise.proxmox.com/debian/ceph-reef trixie enterprise
+Types: deb
+URIs: https://enterprise.proxmox.com/debian/ceph-reef
+Suites: trixie
+Components: enterprise
+Enabled: false
+
+Types: deb
+URIs:
+ https://enterprise.proxmox.com/debian/ceph-squid
+Suites: trixie
+Components: enterprise
+
+Types: deb
+URIs: https://mirror.example.org/other
+Suites: trixie
+Components: main
+EOF
+        cat >"$F/want-ceph" <<'EOF'
+# deb https://enterprise.proxmox.com/debian/ceph-reef trixie enterprise
+Types: deb
+URIs: https://enterprise.proxmox.com/debian/ceph-reef
+Suites: trixie
+Components: enterprise
+Enabled: false
+
+Types: deb
+URIs:
+ https://enterprise.proxmox.com/debian/ceph-squid
+Suites: trixie
+Components: enterprise
+Enabled: false
+
+Types: deb
+URIs: https://mirror.example.org/other
+Suites: trixie
+Components: main
+EOF
+    else
+        cat >"$A/ceph.list" <<'EOF'
+# deb https://enterprise.proxmox.com/debian/ceph-reef trixie enterprise
+deb https://enterprise.proxmox.com/debian/ceph-squid trixie enterprise
+deb https://mirror.example.org/other trixie main
+EOF
+        cat >"$F/want-ceph" <<'EOF'
+# deb https://enterprise.proxmox.com/debian/ceph-reef trixie enterprise
+# deb https://enterprise.proxmox.com/debian/ceph-squid trixie enterprise
+deb https://mirror.example.org/other trixie main
+EOF
+    fi
+    run --yes --only repos >/dev/null
+    cmp -s "$F/want-ceph" "$A/ceph.$layout" || fail "Ceph $layout content not preserved or disabled"
+    cat >"$F/want" <<'EOF'
+Types: deb
+URIs: http://download.proxmox.com/debian/pve
+Suites: trixie
+Components: pve-no-subscription
+Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
+
+Types: deb
+URIs: http://download.proxmox.com/debian/ceph-squid
+Suites: trixie
+Components: no-subscription
+Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
+EOF
+    cmp -s "$F/want" "$A/pve-no-subscription.sources" || fail "historical Ceph release selected in $layout layout"
+    [ "$(status_of repos)" = done ] || fail "Ceph $layout migration incomplete"
+    assert_repos_rerun
+done
+
+fresh_apt trixie
+printf 'Types: deb\nURIs: http://download.proxmox.com/debian/pve\nSuites: trixie\nComponents: pve-no-subscription\nEnabled: no' >"$A/pve-no-subscription.sources"
+cp "$A/pve-no-subscription.sources" "$F/want"
+cat >>"$F/want" <<'EOF'
+
+
+Types: deb
+URIs: http://download.proxmox.com/debian/pve
+Suites: trixie
+Components: pve-no-subscription
+Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
+EOF
+[ "$(status_of repos)" = todo ] || fail "disabled unterminated source counted as done"
+run --yes --only repos >/dev/null
+cmp -s "$F/want" "$A/pve-no-subscription.sources" || fail "appended stanza not separated from unterminated content"
+[ "$(status_of repos)" = done ] || fail "appended stanza remains disabled"
+assert_repos_rerun
+
 echo "ok: proxmox_setup.sh behaviour"

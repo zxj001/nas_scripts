@@ -379,9 +379,21 @@ EOF
 
 # --- runner -----------------------------------------------------------------
 
-# Clone or fast-forward the repo, link it onto PATH and re-exec the fresh copy.
+# Clone the repo if it is missing and link it onto PATH as setup-machine.
+install_repo() {
+    if [ ! -d "$REPO_DIR/.git" ]; then
+        log "cloning $REPO_URL into $REPO_DIR"
+        mkdir -p "$(dirname "$REPO_DIR")"
+        git clone "$REPO_URL" "$REPO_DIR"
+    fi
+    mkdir -p "$HOME/.local/bin"
+    ln -sf "$REPO_DIR/scripts/setup.sh" "$HOME/.local/bin/setup-machine"
+}
+
+# Fast-forward or clone the repo, link it and re-exec the fresh copy.
 # SETUP_UPDATED stops that from looping. Skipped when git is missing, which is
-# the first run on a bare box - dev-tools installs it.
+# the first run on a bare box - the runner installs the repo once a step
+# (dev-tools) has brought git.
 self_update() {
     if [ -n "${SETUP_UPDATED:-}" ]; then
         return 0
@@ -393,14 +405,21 @@ self_update() {
     if [ -d "$REPO_DIR/.git" ]; then
         log "updating $REPO_DIR"
         git -C "$REPO_DIR" pull --ff-only
-    else
-        log "cloning $REPO_URL into $REPO_DIR"
-        mkdir -p "$(dirname "$REPO_DIR")"
-        git clone "$REPO_URL" "$REPO_DIR"
     fi
-    mkdir -p "$HOME/.local/bin"
-    ln -sf "$REPO_DIR/scripts/setup.sh" "$HOME/.local/bin/setup-machine"
+    install_repo
     SETUP_UPDATED=1 exec bash "$REPO_DIR/scripts/setup.sh" "$@"
+}
+
+# A non-login shell (ssh host 'bash -s', cron) has neither ~/.local/bin nor
+# nvm, so the checks would call installed tools todo.
+tool_path() {
+    case ":$PATH:" in
+        *":$HOME/.local/bin:"*) ;;
+        *) export PATH="$HOME/.local/bin:$PATH" ;;
+    esac
+    export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+    # shellcheck source=/dev/null
+    if [ -s "$NVM_DIR/nvm.sh" ]; then . "$NVM_DIR/nvm.sh"; fi
 }
 
 parse_args() {
@@ -500,6 +519,7 @@ main() {
     fi
     detect_os
     self_update "$@"
+    tool_path
     select_steps
 
     local step rc status ran=""
@@ -544,6 +564,10 @@ main() {
         log "$step"
         "$(fname "do" "$step")"
         ran="$ran $step"
+        # First run on a bare box: git just arrived, so clone and link now.
+        if [ -z "${SETUP_UPDATED:-}" ] && [ ! -d "$REPO_DIR/.git" ] && have git; then
+            install_repo
+        fi
     done
     signin_list
     reboot_reminder "$ran"

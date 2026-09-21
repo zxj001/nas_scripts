@@ -38,4 +38,13 @@ done
 # test never clones or re-execs.
 bash "$SETUP" --status >/dev/null || fail "--status exited nonzero"
 
+# A non-login shell lacks ~/.local/bin; --status must still find tools there.
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+mkdir -p "$tmp/.local/bin"
+printf '#!/bin/sh\n' >"$tmp/.local/bin/herdr"
+chmod +x "$tmp/.local/bin/herdr"
+env -i HOME="$tmp" PATH=/usr/bin:/bin SETUP_UPDATED=1 bash "$SETUP" --status --only herdr |
+    grep -Eq '^herdr +done$' || fail "--status misses ~/.local/bin/herdr in a clean env"
+
 echo "ok: ${#STEPS[@]} steps"

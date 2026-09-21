@@ -297,6 +297,7 @@ Suites:
  trixie
 Components:
  pve-no-subscription
+Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
 Enabled:
  yes
 EOF
@@ -464,7 +465,7 @@ done
 for protected in debian.sources sources.list; do
     fresh_apt trixie
     printf 'deb https://enterprise.proxmox.com/debian/pve trixie pve-enterprise\n' >"$A/pve-enterprise.list"
-    printf 'deb http://download.proxmox.com/debian/pve trixie pve-no-subscription\n' >"$A/public.list"
+    printf 'deb [signed-by=/usr/share/keyrings/proxmox-archive-keyring.gpg] http://download.proxmox.com/debian/pve trixie pve-no-subscription\n' >"$A/public.list"
     if [ "$protected" = debian.sources ]; then
         cat >>"$A/debian.sources" <<'EOF'
 
@@ -512,7 +513,7 @@ fresh_apt bookworm
 cat >"$A/unrelated.list" <<'EOF'
 deb [arch=amd64] http://deb.debian.org/debian bookworm main # https://enterprise.proxmox.com/debian/ceph-reef configured separately
 # Historical URI: https://enterprise.proxmox.com/debian/ceph-squid
-deb http://download.proxmox.com/debian/pve bookworm main # pve-no-subscription
+deb [signed-by=/usr/share/keyrings/proxmox-archive-keyring.gpg] http://download.proxmox.com/debian/pve bookworm main # pve-no-subscription
 EOF
 cat >"$A/unrelated.sources" <<'EOF'
 Types: deb
@@ -524,7 +525,7 @@ EOF
 cp "$A/unrelated.list" "$F/unrelated-list"
 cp "$A/unrelated.sources" "$F/unrelated-sources"
 [ "$(status_of repos)" = todo ] || fail "inline component comment counted as source"
-printf 'deb http://download.proxmox.com/debian/pve bookworm pve-no-subscription\n' >"$A/public.list"
+printf 'deb [signed-by=/usr/share/keyrings/proxmox-archive-keyring.gpg] http://download.proxmox.com/debian/pve bookworm pve-no-subscription\n' >"$A/public.list"
 [ "$(status_of repos)" = done ] || fail "enterprise comment counted as enabled source"
 printf 'deb [signed-by=/keyring] https://enterprise.proxmox.com/debian/pve bookworm pve-enterprise # keep note\n' >"$A/pve-enterprise.list"
 cat "$F/unrelated-list" >>"$A/pve-enterprise.list"
@@ -638,6 +639,7 @@ Types: deb-src
 URIs: http://download.proxmox.com/debian/pve
 Suites: bookworm
 Components: pve-no-subscription
+Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
 EOF
             cat >"$A/ceph.sources" <<'EOF'
 Types: deb
@@ -655,16 +657,17 @@ Types: $types
 URIs: http://download.proxmox.com/debian/ceph-squid
 Suites: bookworm
 Components: no-subscription
+Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
 EOF
             fi
         else
-            printf 'deb http://download.proxmox.com/debian/pve bookworm pve-no-subscription\n' >"$A/public.list"
+            printf 'deb [signed-by=/usr/share/keyrings/proxmox-archive-keyring.gpg] http://download.proxmox.com/debian/pve bookworm pve-no-subscription\n' >"$A/public.list"
             printf '# deb https://enterprise.proxmox.com/debian/ceph-squid bookworm enterprise\n' >"$A/ceph.list"
             if [ "$ceph_state" != absent ]; then
-                printf 'deb-src http://download.proxmox.com/debian/ceph-squid bookworm no-subscription\n' >>"$A/public.list"
+                printf 'deb-src [signed-by=/usr/share/keyrings/proxmox-archive-keyring.gpg] http://download.proxmox.com/debian/ceph-squid bookworm no-subscription\n' >>"$A/public.list"
             fi
             if [ "$ceph_state" = binary-and-source ]; then
-                printf 'deb http://download.proxmox.com/debian/ceph-squid bookworm no-subscription\n' >>"$A/public.list"
+                printf 'deb [signed-by=/usr/share/keyrings/proxmox-archive-keyring.gpg] http://download.proxmox.com/debian/ceph-squid bookworm no-subscription\n' >>"$A/public.list"
             fi
         fi
         cp "$A/public.$layout" "$F/public-before"
@@ -700,14 +703,16 @@ Types: deb-src
 URIs: http://download.proxmox.com/debian/pve
 Suites: bookworm
 Components: pve-no-subscription
+Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
 
 Types: deb-src
 URIs: http://download.proxmox.com/debian/ceph-reef
 Suites: bookworm
 Components: no-subscription
+Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
 EOF
     else
-        printf 'deb-src http://download.proxmox.com/debian/pve bookworm pve-no-subscription\ndeb-src http://download.proxmox.com/debian/ceph-reef bookworm no-subscription\n' >"$A/public.list"
+        printf 'deb-src [signed-by=/usr/share/keyrings/proxmox-archive-keyring.gpg] http://download.proxmox.com/debian/pve bookworm pve-no-subscription\ndeb-src [signed-by=/usr/share/keyrings/proxmox-archive-keyring.gpg] http://download.proxmox.com/debian/ceph-reef bookworm no-subscription\n' >"$A/public.list"
     fi
     cp "$A/public.$layout" "$F/public-before"
     run --yes --only repos >/dev/null
@@ -718,5 +723,70 @@ EOF
     rm "$A/pve-no-subscription.sources"
     [ "$(status_of repos)" = todo ] || fail "source-only PVE counted as binary: $layout"
 done
+
+for layout in list sources; do
+    for repo in pve ceph-reef; do
+        for signing in absent different fingerprint; do
+            fresh_apt bookworm
+            expected_keyring_sources "$ARCHIVE_KEY" >"$A/pve-no-subscription.sources"
+            component=no-subscription
+            if [ "$repo" = pve ]; then component=pve-no-subscription; fi
+            setting=""
+            case "$signing" in
+                different) setting=/custom/admin-keyring.gpg ;;
+                fingerprint) setting="$ARCHIVE_KEY 0123456789ABCDEF0123456789ABCDEF01234567" ;;
+            esac
+            if [ "$layout" = list ]; then
+                options=""
+                if [ -n "$setting" ]; then options="[arch=amd64 signed-by=${setting// /,}] "; fi
+                printf 'deb-src %shttp://download.proxmox.com/debian/%s bookworm %s\n' "$options" "$repo" "$component" >"$A/public.list"
+            else
+                cat >"$A/public.sources" <<EOF
+Types: deb-src
+URIs: http://download.proxmox.com/debian/$repo
+Suites: bookworm
+Components: $component
+EOF
+                if [ -n "$setting" ]; then printf 'Signed-By: %s\n' "$setting" >>"$A/public.sources"; fi
+            fi
+            [ "$(status_of repos 2>/dev/null)" = todo ] || fail "conflicting $layout $repo $signing counted as done"
+            keyring_enterprise_fixture bookworm
+            rm -rf "$F/apt-before"
+            cp -R "$F/etc/apt" "$F/apt-before"
+            if run --yes --only repos >"$F/output" 2>&1; then fail "conflicting signing accepted: $layout $repo $signing"; fi
+            grep -q 'conflicting Signed-By' "$F/output" || fail "signing conflict not explained"
+            diff -r "$F/apt-before" "$F/etc/apt" || fail "signing refusal changed source files"
+            [ -z "$(calls)" ] || fail "signing refusal invoked apt"
+            if HARNESS_CALL=do_repos run >/dev/null 2>&1; then fail "direct call accepted signing conflict"; fi
+            diff -r "$F/apt-before" "$F/etc/apt" || fail "direct refusal changed source files"
+            [ -z "$(calls)" ] || fail "direct signing refusal invoked apt"
+        done
+    done
+done
+
+fresh_apt bookworm
+expected_keyring_sources "$ARCHIVE_KEY" >"$A/pve-no-subscription.sources"
+cat >"$A/public.sources" <<'EOF'
+Types: deb-src
+URIs: http://download.proxmox.com/debian/pve/
+Suites: bookworm
+Components: pve-no-subscription
+Signed-By:
+ /usr/share/keyrings/proxmox-archive-keyring.gpg
+
+Types: deb-src
+URIs: http://download.proxmox.com/debian/pve
+Suites: forky
+Components: pve-no-subscription
+Signed-By: /other-suite-keyring.gpg
+
+Types: deb-src
+URIs: http://download.proxmox.com/debian/ceph-reef
+Suites: bookworm
+Components: no-subscription
+Enabled: false
+EOF
+[ "$(status_of repos)" = done ] || fail "compatible continued signing or inactive entry rejected"
+assert_repos_rerun
 
 echo "ok: proxmox_setup.sh behaviour"

@@ -119,7 +119,7 @@ source_file() {
                  (u ~ /^http:\/\/download\.proxmox\.com\/debian\/ceph-[a-z]+\/?$/ && c == "no-subscription")))
             repair = (mode == "keyring" && en && managed && signed != key)
             if (mode == "read") {
-                if (u != "") print u "|" s "|" c "|" en "|" ent "|" signed "|" managed "|" types
+                if (u != "") print u "|" s "|" c "|" en "|" ent "|" signed "|" managed "|" types "|" FILENAME
             } else {
                 skip = 0
                 for (i = 1; i <= n; i++) {
@@ -144,10 +144,20 @@ source_file() {
             if (sub(/^[[:space:]]*#[[:space:]]*/, "")) en = 0
             sub(/#.*/, "")
             if ($0 ~ /^[[:space:]]*deb(-src)?[[:space:]]/) {
+                signed = ""
+                if (match($0, /\[[^]]*\]/)) {
+                    options = substr($0, RSTART + 1, RLENGTH - 2)
+                    count = split(options, opts, " ")
+                    for (i = 1; i <= count; i++)
+                        if (opts[i] ~ /^signed-by=/) {
+                            signed = opts[i]; sub(/^signed-by=/, "", signed)
+                            gsub(/,/, " ", signed)
+                        }
+                }
                 sub(/\[[^]]*\][[:space:]]*/, "")
                 c = ""; for (i = 4; i <= NF; i++) c = c (c == "" ? "" : " ") $i
                 ent = enterprise($2)
-                if (mode == "read") print $2 "|" $3 "|" c "|" en "|" ent "|||" $1
+                if (mode == "read") print $2 "|" $3 "|" c "|" en "|" ent "|" signed "||" $1 "|" FILENAME
                 else if (en && ent) raw = "# " raw
             }
             if (mode != "read") print raw
@@ -212,6 +222,27 @@ has_source() {
         END { exit !found }'
 }
 
+signing_compatible() {
+    all_sources | awk -F'|' -v key="$1" -v suite="$(codename)" '
+        $4 && $8 ~ /(^|[[:space:]])deb(-src)?([[:space:]]|$)/ {
+            split($2, suites, " "); current = 0
+            for (j in suites) if (suites[j] == suite) current = 1
+            if (!current) next
+            count = split($6, keys, " ")
+            if (count == 1 && keys[1] == key) next
+            if ($7 && count == 1 &&
+                (keys[1] == "/usr/share/keyrings/proxmox-archive-keyring.gpg" ||
+                 (suite == "bookworm" && keys[1] == "/etc/apt/trusted.gpg.d/proxmox-release-bookworm.gpg"))) next
+            count = split($1, uris, " ")
+            for (i = 1; i <= count; i++)
+                if (uris[i] ~ /^http:\/\/download\.proxmox\.com\/debian\/(pve|ceph-[a-z]+)\/?$/) {
+                    print "conflicting Signed-By for " uris[i] " " suite " in " $9 "; expected " key > "/dev/stderr"
+                    bad = 1
+                }
+        }
+        END { exit bad }'
+}
+
 managed_keyring_matches() {
     source_file read "$APT_DIR/pve-no-subscription.sources" |
         awk -F'|' -v key="$1" '$4 && $7 && $6 != key { bad = 1 } END { exit bad }'
@@ -223,6 +254,7 @@ managed_keyring_matches() {
 check_repos() {
     local srcs key suite releases ceph
     key="$(repo_keyring)" || return 1
+    signing_compatible "$key" || return 1
     managed_keyring_matches "$key" || return 1
     srcs="$(enabled_sources)"
     ! has_enterprise <<<"$srcs" || return 1
@@ -249,6 +281,7 @@ do_repos() {
         fi
     done
     key="$(repo_keyring)" || return 1
+    signing_compatible "$key" || return 1
     releases="$(ceph_releases)"
     if ! managed_keyring_matches "$key"; then
         f="$APT_DIR/pve-no-subscription.sources"

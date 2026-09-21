@@ -77,6 +77,9 @@ On Bookworm only, it can fall back to the installed
 `/etc/apt/trusted.gpg.d/proxmox-release-bookworm.gpg`. The selected keyring must be
 nonempty and readable by `_apt`; otherwise the step refuses before changing sources.
 It downloads no keys and repairs the `Signed-By` fields of its managed stanzas in place.
+If an existing enabled `deb` or `deb-src` entry for the same public URI and suite
+has missing or conflicting `Signed-By` settings, the step refuses unchanged. Resolve
+those administrator settings explicitly before rerunning; the step does not rewrite them.
 
 For a manual equivalent, first select and check the installed keyring in a root Bash
 shell, before editing any sources:

@@ -13,7 +13,7 @@ REPO_DIR="$HOME/tools/nas_scripts"
 # Ordered step registry. Every name here needs three functions, with "-"
 # replaced by "_":
 #
-#   check_<name>    0 = done, 1 = todo, 2 = not applicable on this OS
+#   check_<name>    0 = done, 1 = todo, 2 = not applicable, 3 = manual setup
 #   do_<name>       make it so
 #   default_<name>  echo yes|no - the prompt default for $OS
 #
@@ -25,7 +25,7 @@ REPO_DIR="$HOME/tools/nas_scripts"
 #
 # brew comes first: every other macOS step installs through it. sudo comes
 # next: every other Debian step shells out to sudo.
-STEPS=(brew sudo upgrade guest-agent no-sleep ssh ssh-keys ssh-harden tailscale dev-tools gh node codex pi claude herdr firstmate gpu)
+STEPS=(brew sudo upgrade guest-agent no-sleep power-restore ssh ssh-keys ssh-harden tailscale dev-tools gh node codex pi claude herdr firstmate gpu)
 
 usage() {
     cat <<'EOF'
@@ -176,6 +176,83 @@ do_no_sleep() {
     sudo systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target
 }
 
+# Restoring mains power is a firmware/BMC feature, not an OS boot service.
+power_restore_virtual() {
+    [ "$OS" = debian ] && have systemd-detect-virt && systemd-detect-virt --quiet
+}
+local_ipmi() {
+    [ -e /dev/ipmi0 ] || [ -e /dev/ipmi/0 ] || [ -e /dev/ipmidev/0 ] ||
+        [ -d /sys/class/ipmi/ipmi0 ]
+}
+mac_power_restore_supported() {
+    pmset -g cap 2>/dev/null | grep -Eq '^[[:space:]]*autorestart[[:space:]]*$'
+}
+mac_power_restore_enabled() {
+    pmset -g custom 2>/dev/null | awk '
+        $1 == "autorestart" { seen = 1; if ($2 != 1) disabled = 1 }
+        END { exit !(seen && !disabled) }
+    '
+}
+ipmi_power_restore_enabled() {
+    grep -Eq '^[[:space:]]*Power Restore Policy[[:space:]]*:[[:space:]]*always-on[[:space:]]*$'
+}
+check_power_restore() {
+    if power_restore_virtual; then return 2; fi
+    case "$OS" in
+        debian)
+            local_ipmi || return 3
+            have ipmitool || return 1
+            sudo -n ipmitool -I open chassis status 2>/dev/null | ipmi_power_restore_enabled
+            ;;
+        macos)
+            mac_power_restore_supported || return 3
+            mac_power_restore_enabled
+            ;;
+    esac
+}
+default_power_restore() { echo no; }
+power_restore_guidance() {
+    log "power-restore requires manual firmware setup; it has not been verified"
+    log "Desktop/mini PC: BIOS/UEFI -> Power or APM -> Restore on AC Power Loss / AC Recovery -> Power On"
+    log "Choose Always On for unattended startup; Last State only restarts a previously running machine"
+    log "Mac: System Settings -> Energy -> Start up automatically after a power failure (if available)"
+    log "Server: BMC/IPMI power-restore policy; VM: configure the host and the VM's Start at boot setting"
+    log "See docs/power-restore.md for vendor settings, UPS behavior, Wake-on-LAN and scheduled-start alternatives"
+}
+do_power_restore() {
+    if power_restore_virtual; then
+        power_restore_guidance
+        return 0
+    fi
+    case "$OS" in
+        debian)
+            if ! local_ipmi; then power_restore_guidance; return 0; fi
+            if ! have ipmitool; then
+                sudo apt-get update
+                sudo apt-get install -y ipmitool
+            fi
+            sudo modprobe ipmi_devintf
+            if ! sudo ipmitool -I open chassis policy always-on; then
+                power_restore_guidance
+                return 1
+            fi
+            if ! sudo ipmitool -I open chassis status | ipmi_power_restore_enabled; then
+                echo "IPMI power-restore policy was not verified; check the BMC settings" >&2
+                return 1
+            fi
+            ;;
+        macos)
+            if ! mac_power_restore_supported; then power_restore_guidance; return 0; fi
+            sudo pmset -a autorestart 1
+            if ! mac_power_restore_enabled; then
+                echo "automatic restart was not verified; check System Settings -> Energy" >&2
+                return 1
+            fi
+            ;;
+    esac
+    log "automatic restart after a power failure is enabled; no reboot or power-off was performed"
+}
+
 check_ssh() {
     [ "$OS" = debian ] || return 2
     systemctl is-active --quiet ssh 2>/dev/null
@@ -219,29 +296,50 @@ do_ssh_keys() {
 
 check_ssh_harden() {
     [ "$OS" = debian ] || return 2
-    cmp -s /etc/ssh/sshd_config.d/99-local.conf <(ssh_hardening_config)
+    # Read effective settings, including other drop-ins. Never prompt in --status.
+    sudo -n /usr/sbin/sshd -T 2>/dev/null | ssh_hardening_policy_ok
+}
+ssh_hardening_policy_ok() {
+    local policy
+    policy="$(cat)"
+    grep -qx 'permitrootlogin no' <<<"$policy" &&
+        grep -qx 'pubkeyauthentication yes' <<<"$policy" &&
+        grep -qx 'passwordauthentication no' <<<"$policy"
 }
 ssh_hardening_config() {
     printf '%s\n' 'PermitRootLogin no' 'PubkeyAuthentication yes' 'PasswordAuthentication no'
 }
 default_ssh_harden() { debian_only; }
 do_ssh_harden() {
+    local config=/etc/ssh/sshd_config.d/99-local.conf tmp
+    if sudo test -e "$config" || sudo test -L "$config"; then
+        # A previous run or the operator already created this file. Accept
+        # equivalent policy regardless of comments/format; never replace it.
+        if sudo /usr/sbin/sshd -t && sudo /usr/sbin/sshd -T | ssh_hardening_policy_ok; then
+            sudo systemctl reload ssh
+            log "existing SSH policy is configured; continuing"
+        else
+            log "SSH hardening skipped: preserving $config; effective settings still need review"
+            log "check with: sudo /usr/sbin/sshd -T; continuing the remaining setup steps"
+        fi
+        return 0
+    fi
     if [ "$(id -u)" = 0 ] || ! ssh-keygen -l -f "$HOME/.ssh/authorized_keys" >/dev/null 2>&1; then
         echo "refusing: hardening requires a non-root user with a valid authorized key - run ssh-keys first" >&2
         return 1
     fi
-    local config=/etc/ssh/sshd_config.d/99-local.conf tmp created
     tmp="$(mktemp)"
     ssh_hardening_config >"$tmp"
     sudo mkdir -p /etc/ssh/sshd_config.d
     if ! create_config "$tmp" "$config"; then rm -f "$tmp"; return 1; fi
-    created="$CONFIG_CREATED"
     rm -f "$tmp"
-    if ! sudo sshd -t || ! sudo systemctl reload ssh; then
-        if [ "$created" = 1 ]; then
+    if ! sudo /usr/sbin/sshd -t ||
+        ! sudo /usr/sbin/sshd -T | ssh_hardening_policy_ok || ! sudo systemctl reload ssh; then
+        if [ "$CONFIG_CREATED" = 1 ]; then
             sudo rm -f "$config"
             sudo systemctl reload ssh || true
         fi
+        echo "SSH validation/reload failed; check earlier Include settings before retrying" >&2
         return 1
     fi
     log "verify a new key-based session before closing this one"
@@ -658,6 +756,7 @@ main() {
         case "$rc" in
             0) status="done" ;;
             2) status=n/a ;;
+            3) status=manual; todo+=("$step") ;;
             *)
                 status=todo
                 todo+=("$step")

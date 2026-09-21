@@ -42,6 +42,21 @@ Open a fresh session to confirm key login works before the next step.
 
 Only once key login works. Keep your current session open.
 
+On reruns, setup checks the effective global policy using `sudo -n /usr/sbin/sshd -T`,
+so comments, directive order, and settings supplied by other drop-ins do not cause
+a file-content conflict. Without cached sudo credentials, `--status` may report
+`todo`; it never prompts for privilege.
+
+If `99-local.conf` already exists but its effective policy is not hardened, setup
+leaves it unchanged, explicitly reports `SSH hardening skipped`, and continues
+to subsequent steps. That message does not mean SSH is hardened. Review the
+configuration manually, then rerun `setup-machine --only ssh-harden`. If the file
+is absent, setup creates its drop-in and validates both syntax and effective
+global policy before reloading; validation/reload failure removes only the new file.
+
+The global policy check does not validate every user/address-specific `Match`
+block or prove that a new key-based connection works.
+
 ```
 sudo nano /etc/ssh/sshd_config.d/99-local.conf
 ```

@@ -25,7 +25,7 @@ REPO_DIR="$HOME/tools/nas_scripts"
 #
 # brew comes first: every other macOS step installs through it. sudo comes
 # next: every other Debian step shells out to sudo.
-STEPS=(brew sudo upgrade guest-agent no-sleep ssh ssh-keys ssh-harden tailscale dev-tools gh node codex pi claude herdr firstmate)
+STEPS=(brew sudo upgrade guest-agent no-sleep ssh ssh-keys ssh-harden tailscale dev-tools gh node codex pi claude herdr firstmate gpu)
 
 usage() {
     cat <<'EOF'
@@ -317,6 +317,64 @@ default_firstmate() { echo yes; }
 do_firstmate() {
     mkdir -p "$HOME/tools"
     git clone https://github.com/kunchenguid/firstmate "$HOME/tools/firstmate"
+}
+
+# An NVIDIA card, if there is one. Debian installs the driver; macOS has none,
+# so the card is reported and nothing is offered. Passthrough itself is a
+# Proxmox host job - docs/gpu-passthrough.md.
+nvidia_name() {
+    case "$OS" in
+        debian) lspci -nn 2>/dev/null | grep -iE 'vga|3d' | grep -i nvidia ;;
+        macos) system_profiler SPDisplaysDataType 2>/dev/null | grep -i nvidia ;;
+    esac
+}
+
+check_gpu() {
+    local card
+    card="$(nvidia_name | head -1)"
+    if [ -z "$card" ]; then
+        if [ "$OS" = debian ] && [ "$(systemd-detect-virt 2>/dev/null)" = kvm ]; then
+            echo "gpu: no NVIDIA device in this VM - pass the card through first, see docs/gpu-passthrough.md" >&2
+        fi
+        return 2
+    fi
+    # On stderr so the status table on stdout stays two columns.
+    echo "gpu: $card" >&2
+    # macOS ships no NVIDIA driver, so a card found there is all there is to do.
+    [ "$OS" = debian ] || return 0
+    nvidia-smi >/dev/null 2>&1
+}
+default_gpu() { debian_only; }
+do_gpu() {
+    if have mokutil && mokutil --sb-state 2>/dev/null | grep -q 'SecureBoot enabled'; then
+        echo "gpu: Secure Boot is on - the DKMS-built nvidia module will not load until Secure Boot is disabled or the dkms key is enrolled, see docs/gpu-passthrough.md" >&2
+    fi
+    # Drop in only the components no active source already carries, so apt
+    # never sees a target configured twice. The drop-in itself is excluded so
+    # a rerun recomputes the same set; a component after a # (the netinst
+    # cdrom line mentions contrib) does not count. -q exits 0 on a match even
+    # when a listed file is missing.
+    local c missing=""
+    for c in contrib non-free non-free-firmware; do
+        grep -rqsE "^[^#]*(^|[[:space:]])$c([[:space:]]|$)" --exclude=nonfree.sources \
+            /etc/apt/sources.list /etc/apt/sources.list.d/ || missing="$missing $c"
+    done
+    if [ -n "$missing" ]; then
+        sudo tee /etc/apt/sources.list.d/nonfree.sources >/dev/null <<EOF
+Types: deb
+URIs: http://deb.debian.org/debian
+Suites: trixie trixie-updates
+Components:$missing
+
+Types: deb
+URIs: http://security.debian.org/debian-security
+Suites: trixie-security
+Components:$missing
+EOF
+    fi
+    sudo apt-get update
+    sudo apt-get install -y nvidia-driver firmware-misc-nonfree
+    log "reboot to load the driver, then check with nvidia-smi"
 }
 
 # --- runner -----------------------------------------------------------------

@@ -5,7 +5,7 @@
 #
 # Everything below is a definition; the last line calls main, so a half
 # downloaded copy does nothing.
-set -euo pipefail
+set -Eeuo pipefail
 
 REPO_URL="https://github.com/zxj001/nas_scripts"
 REPO_DIR="$HOME/tools/nas_scripts"
@@ -20,7 +20,7 @@ REPO_DIR="$HOME/tools/nas_scripts"
 # Adding a step is adding its name here plus those three functions, nothing
 # else. tests/test_setup.sh fails if a registered step is missing one.
 #
-# A do_ that exits 75 means "stop here, rerun later" - the runner stops
+# A do_ that returns 75 means "stop here, rerun later" - the runner stops
 # without an error. sudo needs it: a new group only applies to a new login.
 #
 # brew comes first: every other macOS step installs through it. sudo comes
@@ -70,7 +70,7 @@ do_sudo() {
     log "asking for the root password to add $(id -un) to the sudo group"
     su -c "apt-get update && apt-get install -y sudo && /usr/sbin/usermod -aG sudo $(id -un)" </dev/tty
     echo "log out, log back in, then rerun setup-machine"
-    exit 75
+    return 75
 }
 
 # "Always offered" in practice means: offered whenever apt has something to
@@ -175,13 +175,20 @@ check_brew() {
 }
 default_brew() { echo yes; }
 do_brew() {
+    local brew
     /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" </dev/tty
-    # shellcheck disable=SC2016  # the literal eval line is what belongs in .zprofile
-    echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >>"$HOME/.zprofile"
-    eval "$(/opt/homebrew/bin/brew shellenv)"
+    if [ -x /opt/homebrew/bin/brew ]; then brew=/opt/homebrew/bin/brew; else brew=/usr/local/bin/brew; fi
+    echo "eval \"\$($brew shellenv)\"" >>"$HOME/.zprofile"
+    eval "$("$brew" shellenv)"
 }
 
-check_tailscale() { have tailscale && tailscale status >/dev/null 2>&1; }
+check_tailscale() {
+    local ts=tailscale
+    if [ "$OS" = macos ] && ! have tailscale; then
+        ts=/Applications/Tailscale.app/Contents/MacOS/Tailscale
+    fi
+    "$ts" status >/dev/null 2>&1
+}
 default_tailscale() { echo yes; }
 do_tailscale() {
     case "$OS" in
@@ -452,26 +459,16 @@ main() {
         return 1
     fi
 
+    # Steps run in this shell so what one exports (nvm, brew shellenv, PATH)
+    # reaches the next. errexit still applies inside a step; this trap turns a
+    # failure into "step failed" and a return of 75 into a clean stop.
+    trap 'rc=$?; if [ "$rc" = 75 ]; then reboot_reminder "$ran"; exit 0; else echo "step failed: $step" >&2; reboot_reminder "$ran"; exit 1; fi' ERR
     for step in "${todo[@]}"; do
         if [ "$OPT_YES" != 1 ] && ! prompt "$step" "$("$(fname default "$step")")"; then
             continue
         fi
         log "$step"
-        set +e
-        (
-            set -e
-            "$(fname "do" "$step")"
-        )
-        rc=$?
-        set -e
-        if [ "$rc" -eq 75 ]; then
-            return 0
-        fi
-        if [ "$rc" -ne 0 ]; then
-            echo "step failed: $step" >&2
-            reboot_reminder "$ran"
-            return 1
-        fi
+        "$(fname "do" "$step")"
         ran="$ran $step"
     done
     signin_list

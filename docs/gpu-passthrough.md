@@ -21,3 +21,5 @@ while the GT 1030 is dedicated to the VM.
 
 Full procedure: the PCI(e) passthrough chapter of the
 [Proxmox admin guide](https://pve.proxmox.com/pve-docs/pve-admin-guide.html).
+
+After passthrough, run `setup-machine --only gpu` in the VM to install the NVIDIA driver.

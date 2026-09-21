@@ -15,16 +15,17 @@ fail() {
 PVE_SETUP="$ROOT/scripts/proxmox_setup.sh"
 
 if command -v shellcheck >/dev/null 2>&1; then
-    shellcheck "$SETUP" "$PVE_SETUP" "${BASH_SOURCE[0]}" || fail "shellcheck"
+    shellcheck "$SETUP" "$PVE_SETUP" "${BASH_SOURCE[0]}" "$ROOT/tests/test_proxmox_setup.sh" || fail "shellcheck"
 else
     echo "shellcheck not installed, skipped"
 fi
 
 # Every registered step needs its check_/do_/default_ trio. Load the script's
 # definitions (everything but the `main "$@"` call) and ask bash for the
-# functions it actually defined.
-check_registry() {
-    local script="$1" step prefix
+# functions it actually defined. A subshell per script, so one script's
+# functions can never satisfy the other's registry.
+check_registry() (
+    script="$1"
     bash -n "$script" || fail "syntax error in $script"
     grep -q '^main "\$@"$' "$script" || fail "no main \"\$@\" call found in $script"
     STEPS=()
@@ -36,7 +37,7 @@ check_registry() {
                 fail "step '$step' in $script has no ${prefix}_${step//-/_} function"
         done
     done
-}
+)
 check_registry "$PVE_SETUP"
 check_registry "$SETUP"
 
@@ -60,4 +61,4 @@ chmod +x "$tmp/.local/bin/herdr"
 env -i HOME="$tmp" PATH=/usr/bin:/bin SETUP_UPDATED=1 bash "$SETUP" --status --only herdr |
     grep -Eq '^herdr +done$' || fail "--status misses ~/.local/bin/herdr in a clean env"
 
-echo "ok: ${#STEPS[@]} steps"
+echo "ok: setup.sh and proxmox_setup.sh"

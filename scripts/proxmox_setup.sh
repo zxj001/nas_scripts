@@ -11,6 +11,17 @@ set -Eeuo pipefail
 
 LAN_ROUTE="192.168.1.0/24"
 
+# Test hook: tests/test_proxmox_setup.sh points every path below into a
+# fixture. Unset on a real host.
+P="${PVE_SETUP_PREFIX:-}"
+AUTH_KEYS="$P/root/.ssh/authorized_keys"
+# Fingerprints of the keys the operator gave this script. Proxmox adds its own
+# node (and cluster) keys to authorized_keys, so a nonempty file proves nothing
+# about the operator's access.
+OPERATOR_FPS="$P/root/.ssh/operator-keys"
+SSHD_DROPIN="$P/etc/ssh/sshd_config.d/99-local.conf"
+SYSCTL_FILE="$P/etc/sysctl.d/99-tailscale.conf"
+
 # Ordered step registry, same contract as setup.sh. Every name here needs
 # three functions, with "-" replaced by "_":
 #
@@ -32,6 +43,10 @@ Usage: proxmox_setup.sh [--status] [--yes] [--only a,b] [--help]
   --yes        run every not-done step without prompting
   --only a,b   only these steps, comma separated
   --help       this text
+
+PVE_OPERATOR_KEY="ssh-ed25519 AAAA..." supplies your public key to ssh-keys
+(needed with --yes). ssh-harden refuses until sshd has logged a root login
+with that key, so ssh in with it once before hardening.
 EOF
 }
 
@@ -56,44 +71,154 @@ require_pve() {
 
 # --- steps ------------------------------------------------------------------
 
-check_ssh_keys() { [ -s /root/.ssh/authorized_keys ]; }
+# Fingerprints (SHA256:...) of the keys in a key file, one per line.
+fingerprints() { ssh-keygen -l -f "$1" 2>/dev/null | awk '{print $2}'; }
+
+# Operator fingerprints whose key is still in authorized_keys.
+operator_keys_present() {
+    local fp
+    [ -s "$OPERATOR_FPS" ] || return 0
+    while read -r fp; do
+        if fingerprints "$AUTH_KEYS" | grep -qxF "$fp"; then echo "$fp"; fi
+    done <"$OPERATOR_FPS"
+}
+
+# Done when a key the operator supplied is in authorized_keys. With
+# PVE_OPERATOR_KEY set, that key specifically, so a second key can be added.
+check_ssh_keys() {
+    local tmp fp
+    if [ -n "${PVE_OPERATOR_KEY:-}" ]; then
+        tmp="$(mktemp)"
+        printf '%s\n' "$PVE_OPERATOR_KEY" >"$tmp"
+        fp="$(fingerprints "$tmp")"
+        rm -f "$tmp"
+        [ -n "$fp" ] && fingerprints "$AUTH_KEYS" | grep -qxF "$fp" &&
+            grep -qxF "$fp" "$OPERATOR_FPS" 2>/dev/null
+        return
+    fi
+    [ -n "$(operator_keys_present)" ]
+}
 default_ssh_keys() { echo yes; }
-do_ssh_keys() {
-    local key tmp
-    mkdir -p /root/.ssh
-    touch /root/.ssh/authorized_keys
+
+# Append one public key unless its key material is already there, and record
+# its fingerprint as an operator key. Appends through the Proxmox symlink
+# (authorized_keys -> /etc/pve/priv/authorized_keys); never replaces it.
+add_operator_key() {
+    local key="$1" tmp fp
     tmp="$(mktemp)"
-    while :; do
-        read -r -p "paste a public key (blank to finish): " key </dev/tty
-        [ -n "$key" ] || break
-        printf '%s\n' "$key" >"$tmp"
-        if ! ssh-keygen -l -f "$tmp" >/dev/null 2>&1; then
-            echo "not a public key, ignored" >&2
-            continue
-        fi
-        printf '%s\n' "$key" >>/root/.ssh/authorized_keys
-        log "added $(ssh-keygen -l -f "$tmp")"
-    done
+    printf '%s\n' "$key" >"$tmp"
+    fp="$(fingerprints "$tmp")"
     rm -f "$tmp"
-    chmod 700 /root/.ssh
-    chmod 600 /root/.ssh/authorized_keys
+    if [ -z "$fp" ]; then
+        echo "not a public key, ignored" >&2
+        return 0
+    fi
+    if fingerprints "$AUTH_KEYS" | grep -qxF "$fp"; then
+        log "already present: $fp"
+    else
+        printf '%s\n' "$key" >>"$AUTH_KEYS"
+        log "added $fp"
+    fi
+    grep -qxF "$fp" "$OPERATOR_FPS" 2>/dev/null || echo "$fp" >>"$OPERATOR_FPS"
+}
+
+do_ssh_keys() {
+    local key
+    mkdir -p "$(dirname "$AUTH_KEYS")"
+    touch "$AUTH_KEYS"
+    if [ -n "${PVE_OPERATOR_KEY:-}" ]; then
+        add_operator_key "$PVE_OPERATOR_KEY"
+    elif [ "$OPT_YES" = 1 ]; then
+        echo "--yes needs your public key in PVE_OPERATOR_KEY" >&2
+        return 1
+    else
+        while :; do
+            read -r -p "paste your public key (blank to finish): " key </dev/tty
+            [ -n "$key" ] || break
+            add_operator_key "$key"
+        done
+    fi
+    chmod 700 "$(dirname "$AUTH_KEYS")"
+    chmod 600 "$AUTH_KEYS"
+    if [ -f "$OPERATOR_FPS" ]; then chmod 600 "$OPERATOR_FPS"; fi
+}
+
+# sshd logs "Accepted publickey for root from ... SHA256:..." per key login,
+# so the journal proves an operator key really logs in. The unit covers both
+# sshd and sshd-session (OpenSSH 9.8+).
+operator_login_seen() {
+    local fp accepted
+    accepted="$(journalctl -u ssh.service --no-pager -o cat 2>/dev/null | grep 'Accepted publickey for root ' || true)"
+    for fp in $(operator_keys_present); do
+        if grep -qF "$fp" <<<"$accepted"; then return 0; fi
+    done
+    return 1
+}
+
+# The policy that counts is what sshd resolves, not what our file says: the
+# first value wins, so an earlier include or sshd_config line can override it.
+# ponytail: evaluates root from localhost only; a Match block for other
+# addresses is not checked.
+sshd_policy_ok() {
+    local eff
+    eff="$(sshd -T -C user=root,host=localhost,addr=127.0.0.1 2>/dev/null)" || return 1
+    grep -Eqx 'permitrootlogin (prohibit-password|without-password)' <<<"$eff" &&
+        grep -qx 'pubkeyauthentication yes' <<<"$eff" &&
+        grep -qx 'passwordauthentication no' <<<"$eff" &&
+        grep -qx 'kbdinteractiveauthentication no' <<<"$eff"
+}
+
+# Put the managed drop-in back how it was before this run ($1: backup copy,
+# empty if there was none).
+restore_dropin() {
+    if [ -n "$1" ]; then
+        mv "$1" "$SSHD_DROPIN"
+    else
+        rm -f "$SSHD_DROPIN"
+    fi
 }
 
 # Root by key only. Never PermitRootLogin no: the web UI shell, migration and
 # clustering log in as root over SSH.
-check_ssh_harden() { [ -f /etc/ssh/sshd_config.d/99-local.conf ]; }
+check_ssh_harden() { sshd_policy_ok; }
 default_ssh_harden() { echo yes; }
 do_ssh_harden() {
-    if [ ! -s /root/.ssh/authorized_keys ]; then
-        echo "refusing: /root/.ssh/authorized_keys is empty, this would lock you out - run ssh-keys first" >&2
+    local backup=""
+    if [ -z "$(operator_keys_present)" ]; then
+        echo "refusing: no operator key in $AUTH_KEYS (Proxmox's own node keys do not count) - run ssh-keys first" >&2
         return 1
     fi
-    cat >/etc/ssh/sshd_config.d/99-local.conf <<'EOF'
+    if ! operator_login_seen && [ "$OPT_YES" != 1 ]; then
+        read -r -p "log in as root with your key from a NEW terminal now, then press Enter " _ </dev/tty
+    fi
+    if ! operator_login_seen; then
+        echo "refusing: sshd has logged no login with your operator key - ssh in as root with it first" >&2
+        return 1
+    fi
+    if [ -f "$SSHD_DROPIN" ]; then
+        backup="$(mktemp)"
+        cp -p "$SSHD_DROPIN" "$backup"
+    fi
+    cat >"$SSHD_DROPIN" <<'EOF'
 PermitRootLogin prohibit-password
+PubkeyAuthentication yes
 PasswordAuthentication no
+KbdInteractiveAuthentication no
 EOF
-    sshd -t || { rm -f /etc/ssh/sshd_config.d/99-local.conf; return 1; }
-    systemctl reload ssh
+    if ! sshd -t; then
+        restore_dropin "$backup"
+        return 1
+    fi
+    if ! sshd_policy_ok; then
+        echo "an earlier sshd setting overrides $SSHD_DROPIN; find it with: grep -rniE 'PermitRootLogin|PubkeyAuth|PasswordAuth|KbdInteractive' /etc/ssh/" >&2
+        restore_dropin "$backup"
+        return 1
+    fi
+    if ! systemctl reload ssh; then
+        restore_dropin "$backup"
+        return 1
+    fi
+    rm -f "$backup"
     log "verify a new key-based session before closing this one"
 }
 
@@ -104,30 +229,51 @@ do_tailscale() {
     tailscale up  # prints a URL to open
 }
 
-# Advertised routes live in the prefs; `tailscale status --json` only lists a
-# route once it has been approved in the admin console.
+# The routes this node advertises, one per line, from the AdvertiseRoutes
+# pref. Perl because every Proxmox install has it; jq is not guaranteed.
+advertised_routes() {
+    tailscale debug prefs 2>/dev/null |
+        perl -MJSON::PP -0777 -ne 'print "$_\n" for @{ decode_json($_)->{AdvertiseRoutes} || [] }'
+}
+
+# Live forwarding, the persisted setting, a connected client and the route in
+# AdvertiseRoutes. Approving it in the admin console stays a manual step.
 check_subnet_router() {
-    [ -f /etc/sysctl.d/99-tailscale.conf ] &&
-        tailscale debug prefs 2>/dev/null | grep -qF "\"$LAN_ROUTE\""
+    [ "$(sysctl -n net.ipv4.ip_forward 2>/dev/null)" = 1 ] &&
+        grep -Eqx '[[:space:]]*net\.ipv4\.ip_forward[[:space:]]*=[[:space:]]*1[[:space:]]*' "$SYSCTL_FILE" 2>/dev/null &&
+        tailscale status >/dev/null 2>&1 &&
+        advertised_routes | grep -qxF "$LAN_ROUTE"
 }
 default_subnet_router() { echo no; }
 do_subnet_router() {
-    if ! have tailscale; then
-        echo "tailscale is not installed - run the tailscale step first" >&2
+    local routes tmp
+    if ! tailscale status >/dev/null 2>&1; then
+        echo "tailscale is not connected - run the tailscale step first" >&2
         return 1
     fi
-    cat >/etc/sysctl.d/99-tailscale.conf <<'EOF'
-net.ipv4.ip_forward = 1
-net.ipv6.conf.all.forwarding = 1
-EOF
-    sysctl -p /etc/sysctl.d/99-tailscale.conf
-    # `tailscale set` changes one pref and keeps the rest; older clients only
-    # have `up`, which wants every non-default flag repeated.
-    if tailscale set --help >/dev/null 2>&1; then
-        tailscale set --advertise-routes="$LAN_ROUTE"
-    else
-        tailscale up --advertise-routes="$LAN_ROUTE"
+    # `set` changes one pref and keeps the rest; `up` would want every flag.
+    if ! tailscale set --help >/dev/null 2>&1; then
+        echo "this tailscale has no 'tailscale set' - upgrade it: curl -fsSL https://tailscale.com/install.sh | sh" >&2
+        return 1
     fi
+    # Add the LAN to what is advertised already, never replace it. The exit
+    # node routes (/0) belong to --advertise-exit-node, which set preserves.
+    routes="$({
+        advertised_routes | grep -vxE '0\.0\.0\.0/0|::/0' || true
+        echo "$LAN_ROUTE"
+    } | awk '!seen[$0]++' | paste -sd, -)"
+    # IPv4 only: the route is IPv4, and IPv6 forwarding would stop the host
+    # accepting router advertisements. Other lines in the file are kept.
+    mkdir -p "$(dirname "$SYSCTL_FILE")"
+    tmp="$(mktemp)"
+    {
+        grep -Ev '^[[:space:]]*net\.ipv4\.ip_forward[[:space:]]*=' "$SYSCTL_FILE" 2>/dev/null || true
+        echo 'net.ipv4.ip_forward = 1'
+    } >"$tmp"
+    cat "$tmp" >"$SYSCTL_FILE"
+    rm -f "$tmp"
+    sysctl -w net.ipv4.ip_forward=1
+    tailscale set --advertise-routes="$routes"
     log "approve $LAN_ROUTE in the Tailscale admin console: Machines -> $(hostname) -> Edit route settings"
 }
 

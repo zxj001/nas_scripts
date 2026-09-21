@@ -1,5 +1,7 @@
 # 4. Tailscale + iPhone access
 
+Automated by `setup-machine --only tailscale` (the iPhone side stays manual).
+
 Tailscale gives the phone a private, encrypted route to the machine without opening ports
 on the router.
 

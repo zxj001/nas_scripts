@@ -1,5 +1,7 @@
 # 7. Herdr
 
+Automated by `setup-machine --only herdr`.
+
 Herdr keeps agent panes (Claude Code, Codex, Pi) running across SSH disconnects. tmux isn't
 needed.
 

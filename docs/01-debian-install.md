@@ -1,5 +1,7 @@
 # 1. Install Debian 13 + XFCE
 
+Manual; only the sudo fix is automated: `setup-machine --only sudo`.
+
 Target stack: Proxmox VE → Debian 13 → XFCE → X11. On bare metal, skip the Proxmox steps
 and boot the ISO from a USB stick.
 

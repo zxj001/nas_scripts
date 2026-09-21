@@ -1,5 +1,7 @@
 # 6. Agent CLIs
 
+Automated by `setup-machine --only codex,pi,claude,firstmate`.
+
 Needs [05-dev-tools.md](05-dev-tools.md) done first (Node 22 for Pi, `gh` for FirstMate).
 Install all of these as your normal user, not root.
 

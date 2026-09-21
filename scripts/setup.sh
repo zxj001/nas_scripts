@@ -210,7 +210,10 @@ check_dev_tools() {
 default_dev_tools() { echo yes; }
 do_dev_tools() {
     case "$OS" in
-        debian) sudo apt-get update && sudo apt-get install -y git curl ca-certificates build-essential jq ripgrep ;;
+        debian)
+            sudo apt-get update
+            sudo apt-get install -y git curl ca-certificates build-essential jq ripgrep
+            ;;
         macos) brew install jq ripgrep ;;  # git comes with the Xcode CLT
     esac
     mkdir -p "$HOME/projects" "$HOME/tools"
@@ -472,7 +475,9 @@ main() {
     # Steps run in this shell so what one exports (nvm, brew shellenv, PATH)
     # reaches the next. errexit still applies inside a step; this trap turns a
     # failure into "step failed" and a return of 75 into a clean stop.
-    trap 'rc=$?; if [ "$rc" = 75 ]; then reboot_reminder "$ran"; exit 0; else echo "step failed: $step" >&2; reboot_reminder "$ran"; exit 1; fi' ERR
+    # set -E makes command substitutions inherit this trap but not errexit, so
+    # guard on BASH_SUBSHELL: only a failure in the main shell is a step failure.
+    trap 'rc=$?; if [ "$BASH_SUBSHELL" != 0 ]; then :; elif [ "$rc" = 75 ]; then reboot_reminder "$ran"; exit 0; else echo "step failed: $step" >&2; reboot_reminder "$ran"; exit 1; fi' ERR
     for step in "${todo[@]}"; do
         if [ "$OPT_YES" != 1 ] && ! prompt "$step" "$("$(fname default "$step")")"; then
             continue

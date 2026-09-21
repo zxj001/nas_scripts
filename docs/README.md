@@ -37,8 +37,15 @@ prerequisites themselves, including `--only tailscale`.
 
 `--status` does not update or clone the repository. Normal runs preserve modified
 checkouts, existing launchers, custom apt/SSH files, and nvm defaults. Conflicting
-configuration stops the affected step with the path to resolve; it is not replaced.
+apt configuration stops the affected step with the path to resolve; it is not replaced.
+Existing SSH configuration is checked through `sshd -T`: if it still needs hardening,
+setup reports that hardening was skipped and continues without replacing the file.
 See the [setup safety audit](setup-safety.md) for the step-by-step review and limits.
+
+For automatic startup after a power outage, run `setup-machine --only power-restore`.
+It configures supported local IPMI/macOS settings and provides BIOS/UEFI guidance
+for desktops without IPMI. `manual` means firmware setup remains unverified. See
+[power recovery](power-restore.md).
 
 It ends by listing the sign-ins it can't do for you (`gh auth login`, `codex`, `pi`,
 `claude`, and on macOS Tailscale.app: open it and sign in). The steps below are what the

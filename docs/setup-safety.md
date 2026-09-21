@@ -1,6 +1,6 @@
 # setup.sh repeat-run and data preservation audit
 
-Scope: all 19 registered steps and the runner in `scripts/setup.sh`. This review
+Scope: all 20 registered steps and the runner in `scripts/setup.sh`. This review
 does not cover `proxmox_setup.sh` or recursively audit every external installer and
 package maintainer script. Tests use isolated homes and stub system operations;
 they are not a fresh Debian VM installation test.
@@ -14,7 +14,7 @@ they are not a fresh Debian VM installation test.
 | Status / arguments | `--status` and invalid step selections could pull, clone, or replace a launcher. | Validate selections before self-update; status skips self-update entirely. |
 | Checkout | A normal invocation pulled even when the checkout had local changes or another branch/origin. | Skip automatic update for those cases. Clean main checkouts of the expected HTTPS origin retain fast-forward updates. |
 | Launcher | `ln -sf` replaced existing files or links. | Preserve occupied launcher paths, including directories and dangling links. Reuse the expected link. |
-| SSH config | File existence counted as hardening; the writer could truncate a conflicting file and remove it on validation failure. | Compare expected content. Publish new config atomically; accept identical files and refuse conflicts. Roll back only a file created by this invocation on validation/reload failure. |
+| SSH config | File existence counted as hardening; the writer could truncate a conflicting file and remove it on validation failure. | Check effective global policy with sshd -T. Preserve existing files and report skipped hardening if policy differs, then continue setup. Validate new files and roll back only a file created by this invocation on failure. |
 | Apt config | GitHub key/source and GPU source writes could truncate user configuration. | Stage new files, publish without replacing existing paths, preserve an existing GitHub keyring, refuse conflicting source files. Include the existing GPU drop-in when checking components. |
 | nvm | Reinstalling nvm can overwrite its checkout; setup reset `NVM_DIR` and the default alias. | Reuse existing nvm, honor `NVM_DIR`, preserve an existing default alias, and refuse an incomplete occupied installation directory. |
 | Profiles / keys | Repeated appends could duplicate lines; appends could join an unterminated last line. | Deduplicate exact lines and separate appended content with a newline. |
@@ -33,9 +33,10 @@ they are not a fresh Debian VM installation test.
 | upgrade | Offer when the local apt simulation reports installs. Preserve conffiles; refuse package removals. Package lists can be stale and upgrades intentionally change installed versions. |
 | guest-agent | Skip when qemu-guest-agent is enabled. Package install and service enable are repeatable; the check does not separately verify spice-vdagent. |
 | no-sleep | Check all four sleep targets. Mask without force, so existing custom units are not overwritten. |
+| power-restore | Optional IPMI/macOS power-failure restart setting with readback verification. Desktop BIOS/UEFI setup remains manual/unverified; VMs are n/a. No shutdown/reboot is issued. |
 | ssh | Skip an active SSH service. Package install/enable does not directly rewrite sshd configuration. |
 | ssh-keys | Preserve existing authorized keys, validate pasted keys, avoid exact duplicate lines, and enforce SSH directory/file modes. Equivalent keys with different comments are not deduplicated. |
-| ssh-harden | Require a non-root user with a valid authorized key before writing. Refuse conflicting config and roll back only newly created config on failure. Existing matching files are skipped. |
+| ssh-harden | Require a non-root user with a valid authorized key before writing. Preserve existing config and continue with an explicit skipped-hardening message when effective policy differs. Validate global policy and roll back only newly created config on failure. |
 | tailscale | Ensure HTTPS dependencies before first installation; reconnect an installed client without reinstalling it. Sign-in may still be interactive. |
 | dev-tools | Check curl, build tools, CA certificates, git, jq, rg, and directories on Debian. Install missing packages and create directories without deleting existing contents. |
 | gh | Skip an available CLI. Preserve existing apt keyring/source configuration; download a new key fully before publication. |
@@ -52,10 +53,12 @@ they are not a fresh Debian VM installation test.
 - This is repeatable setup, not an immutable machine image: selected upgrades,
   authentication, package installation, service enable/mask operations, and a clean
   checkout's fast-forward update intentionally change state.
-- Conflicting existing configuration requires manual reconciliation. The script
-  does not back up and overwrite it automatically, or silently claim it is done.
-- SSH config equality and `sshd -t` do not prove that another include or `Match`
-  block has not overridden effective policy. Verify a new key-based session and
+- Conflicting apt configuration requires manual reconciliation and stops the step.
+  Existing SSH configuration is preserved; setup explicitly skips hardening and
+  continues when the effective global policy differs. Neither case silently claims
+  the desired configuration is done.
+- SSH checks use `sshd -T` for effective global policy and `sshd -t` for syntax.
+  They do not evaluate every user/address-specific `Match` block. Verify a new key-based session and
   effective SSH settings before closing the current session. Public-key presence
   alone does not prove access works.
 - External installers, package maintainer scripts, sourced nvm configuration, and

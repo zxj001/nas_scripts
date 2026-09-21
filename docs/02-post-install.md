@@ -35,6 +35,11 @@ gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-ac-type 'no
 gsettings set org.gnome.desktop.session idle-delay 0
 ```
 
+## Power recovery (optional)
+
+For unattended startup after an outage, see [power recovery](power-restore.md)
+and run `setup-machine --only power-restore`. This is separate from disabling sleep.
+
 ## Lighter XFCE (optional)
 
 Applications → Settings → Window Manager Tweaks → Compositor → uncheck

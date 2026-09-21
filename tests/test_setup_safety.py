@@ -215,16 +215,29 @@ def test_firstmate_worktree_is_done_and_existing_path_preserved(tmp_path):
     assert (path / 'keep').read_text() == 'my data'
 
 
-def test_ssh_hardening_preserves_custom_config(tmp_path):
+def test_ssh_hardening_preserves_custom_config_and_continues(tmp_path):
     config = tmp_path / 'etc/ssh/sshd_config.d/99-local.conf'
     config.parent.mkdir(parents=True)
     config.write_text('# user config\nPasswordAuthentication yes\n')
-    run(tmp_path, r'''
-id() { echo 1000; }
-ssh-keygen() { return 0; }
-do_ssh_harden
-''', success=False)
+    result = run(tmp_path, r'''
+eval "$(declare -f sudo | sed '1s/sudo/file_sudo/')"
+sudo() {
+    case "$1" in
+        /usr/sbin/sshd)
+            if [ "$2" = -T ]; then echo 'passwordauthentication yes'; fi
+            ;;
+        systemctl) exit 99 ;;
+        *) file_sudo "$@" ;;
+    esac
+}
+check_ssh_harden() { return 1; }
+check_firstmate() { return 1; }
+do_firstmate() { touch "$HOME/continued"; }
+main --yes --only ssh-harden,firstmate
+''')
     assert config.read_text() == '# user config\nPasswordAuthentication yes\n'
+    assert 'hardening skipped' in result.stdout
+    assert (tmp_path / 'continued').exists()
 
 
 def test_ssh_invalid_new_config_is_rolled_back(tmp_path):
@@ -234,7 +247,7 @@ ssh-keygen() { return 0; }
 # Extend the fixture sudo for service calls, retaining safe file operations.
 eval "$(declare -f sudo | sed '1s/sudo/file_sudo/')"
 sudo() {
-    case "$1" in sshd) return 1 ;; systemctl) return 0 ;; *) file_sudo "$@" ;; esac
+    case "$1" in /usr/sbin/sshd) return 1 ;; systemctl) return 0 ;; *) file_sudo "$@" ;; esac
 }
 do_ssh_harden
 ''', success=False)
@@ -350,8 +363,177 @@ id() { echo 1000; }
 ssh-keygen() { return 0; }
 eval "$(declare -f sudo | sed '1s/sudo/file_sudo/')"
 sudo() {
-    case "$1" in sshd) return 0 ;; systemctl) return 1 ;; *) file_sudo "$@" ;; esac
+    case "$1" in
+        /usr/sbin/sshd)
+            if [ "$2" = -T ]; then printf '%s\n' 'permitrootlogin no' 'pubkeyauthentication yes' 'passwordauthentication no'; fi
+            ;;
+        systemctl) return 1 ;;
+        *) file_sudo "$@" ;;
+    esac
 }
 do_ssh_harden
 ''', success=False)
     assert config.read_bytes() == before
+
+
+def test_ssh_effective_policy_accepts_comments_and_other_settings(tmp_path):
+    config = tmp_path / 'etc/ssh/sshd_config.d/99-local.conf'
+    config.parent.mkdir(parents=True)
+    original = '# local policy\nPasswordAuthentication no\nPort 2222\nPermitRootLogin no\nPubkeyAuthentication yes\n'
+    config.write_text(original)
+    run(tmp_path, r'''
+eval "$(declare -f sudo | sed '1s/sudo/file_sudo/')"
+sudo() {
+    if [ "$1" = -n ]; then shift; fi
+    case "$1" in
+        /usr/sbin/sshd)
+            if [ "$2" = -T ]; then printf '%s\n' 'port 2222' 'passwordauthentication no' 'permitrootlogin no' 'pubkeyauthentication yes'; fi
+            ;;
+        systemctl) touch "$HOME/reloaded" ;;
+        *) file_sudo "$@" ;;
+    esac
+}
+check_ssh_harden
+do_ssh_harden
+do_ssh_harden
+''')
+    assert config.read_text() == original
+    assert (tmp_path / 'reloaded').exists()
+
+
+def test_ssh_effective_policy_override_is_not_done(tmp_path):
+    run(tmp_path, r'''
+sudo() {
+    [ "$*" = '-n /usr/sbin/sshd -T' ] || exit 99
+    printf '%s\n' 'permitrootlogin no' 'pubkeyauthentication yes' 'passwordauthentication yes'
+}
+check_ssh_harden
+''', success=False)
+
+
+def test_ssh_status_does_not_prompt_for_sudo(tmp_path):
+    run(tmp_path, r'''
+sudo() { [ "$1" = -n ] || exit 99; return 1; }
+main --status --only ssh-harden
+''')
+
+
+def test_new_ssh_config_overridden_elsewhere_is_rolled_back(tmp_path):
+    run(tmp_path, r'''
+id() { echo 1000; }
+ssh-keygen() { return 0; }
+eval "$(declare -f sudo | sed '1s/sudo/file_sudo/')"
+sudo() {
+    case "$1" in
+        /usr/sbin/sshd) if [ "$2" = -T ]; then echo 'passwordauthentication yes'; fi ;;
+        systemctl) return 0 ;;
+        *) file_sudo "$@" ;;
+    esac
+}
+do_ssh_harden
+''', success=False)
+    assert not (tmp_path / 'etc/ssh/sshd_config.d/99-local.conf').exists()
+
+
+def test_desktop_power_restore_prints_firmware_guidance_without_changes(tmp_path):
+    result = run(tmp_path, r'''
+power_restore_virtual() { return 1; }
+local_ipmi() { return 1; }
+sudo() { exit 99; }
+main --status --only power-restore
+main --yes --only power-restore
+''')
+    assert 'manual' in result.stdout
+    assert 'BIOS/UEFI' in result.stdout
+    assert 'has not been verified' in result.stdout
+    assert 'is enabled' not in result.stdout
+
+
+def test_vm_power_restore_is_not_applicable(tmp_path):
+    result = run(tmp_path, r'''
+power_restore_virtual() { return 0; }
+sudo() { exit 99; }
+main --yes --only power-restore
+''')
+    assert 'n/a' in result.stdout
+
+
+def test_ipmi_power_restore_verified_and_second_run_does_nothing(tmp_path):
+    run(tmp_path, r'''
+power_restore_virtual() { return 1; }
+local_ipmi() { return 0; }
+have() { [ "$1" = ipmitool ] && [ -f "$HOME/ipmitool" ]; }
+sudo() {
+    if [ "$1" = -n ]; then shift; fi
+    case "$*" in
+        'apt-get update') touch "$HOME/updated" ;;
+        'apt-get install -y ipmitool') test -f "$HOME/updated"; touch "$HOME/ipmitool" ;;
+        'modprobe ipmi_devintf') : ;;
+        'ipmitool -I open chassis policy always-on') echo set >>"$HOME/writes"; touch "$HOME/enabled" ;;
+        'ipmitool -I open chassis status')
+            if [ -f "$HOME/enabled" ]; then echo 'Power Restore Policy : always-on'; else echo 'Power Restore Policy : previous'; fi
+            ;;
+        *) exit 99 ;;
+    esac
+}
+main --yes --only power-restore
+main --yes --only power-restore
+''')
+    assert (tmp_path / 'writes').read_text() == 'set\n'
+
+
+def test_ipmi_unverified_policy_fails(tmp_path):
+    run(tmp_path, r'''
+power_restore_virtual() { return 1; }
+local_ipmi() { return 0; }
+have() { return 0; }
+sudo() { if [ "${*: -2}" = 'chassis status' ]; then echo 'Power Restore Policy : always-off'; fi; }
+do_power_restore
+''', success=False)
+
+
+def test_mac_power_restore_preserves_other_settings_and_skips_repeat(tmp_path):
+    run(tmp_path, r'''
+detect_os() { OS=macos; }
+power_restore_virtual() { return 1; }
+pmset() {
+    case "$*" in
+        '-g cap') printf 'Capabilities:\n autorestart\n' ;;
+        '-g custom')
+            if [ -f "$HOME/enabled" ]; then echo ' autorestart 1'; else echo ' autorestart 0'; fi
+            echo ' sleep 30'
+            ;;
+        *) exit 99 ;;
+    esac
+}
+sudo() {
+    [ "$*" = 'pmset -a autorestart 1' ] || exit 99
+    echo set >>"$HOME/writes"
+    touch "$HOME/enabled"
+}
+main --yes --only power-restore
+main --yes --only power-restore
+''')
+    assert (tmp_path / 'writes').read_text() == 'set\n'
+
+
+def test_unsupported_mac_power_restore_remains_manual(tmp_path):
+    result = run(tmp_path, r'''
+detect_os() { OS=macos; }
+power_restore_virtual() { return 1; }
+pmset() { echo 'sleep'; }
+sudo() { exit 99; }
+main --yes --only power-restore
+''')
+    assert 'manual' in result.stdout
+    assert 'has not been verified' in result.stdout
+
+
+def test_power_restore_status_does_not_modify_hardware(tmp_path):
+    run(tmp_path, r'''
+power_restore_virtual() { return 1; }
+local_ipmi() { return 0; }
+have() { return 0; }
+sudo() { [ "$*" = '-n ipmitool -I open chassis status' ] || exit 99; return 1; }
+main --status --only power-restore
+''')

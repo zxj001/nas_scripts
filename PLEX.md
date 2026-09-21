@@ -226,3 +226,5 @@ sudo e4defrag -c /media/jasonz001/Drive1
 # Extents for a single file
 filefrag "/media/jasonz001/Drive1/Plex1/Movies/<file>.mkv"
 ```
+
+To rank the most fragmented files across the Plex folders, run `python3 scripts/defrag.py` from the repo (add `--defrag` to fix them with `e4defrag`).

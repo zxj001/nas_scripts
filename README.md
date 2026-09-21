@@ -5,11 +5,12 @@ Tailscale, dev tools and agent CLIs. See [docs/](docs/README.md).
 
 # Scripts
 
-Python helpers for the Plex drives live in `scripts/`. Run them from the repo root,
-e.g. `python3 scripts/disk_check.py`; each takes `--help`.
+Helpers live in `scripts/`. Run them from the repo root, e.g.
+`python3 scripts/disk_check.py`; each takes `--help`.
 
 | Script | Purpose |
 |--------|---------|
+| `scripts/setup.sh` | Set up a Debian 13 or macOS machine the way [docs/](docs/README.md) describes; `--status` shows what is left to do |
 | `scripts/disk_check.py` | Disk space on the Plex folders' drives plus drive health; exits 1 if anything needs attention (cron-friendly) |
 | `scripts/find_largest_files.py` | List the largest files under the Plex folders (or given directories) |
 | `scripts/defrag.py` | Find the most fragmented files using `filefrag`; `--defrag` runs `e4defrag` on them |

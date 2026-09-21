@@ -778,6 +778,9 @@ EOF
     [ "$(status_of repos)" = todo ] || fail "source-only PVE counted as binary: $layout"
 done
 
+# APT accepts an absent Signed-By followed by an explicit key, but rejects
+# the reverse order. Sort the administrator entry after the managed file so
+# the absent-key case exercises that conflict for both source formats.
 for layout in list sources; do
     for repo in pve ceph-reef; do
         for signing in absent different fingerprint; do
@@ -793,18 +796,18 @@ for layout in list sources; do
             if [ "$layout" = list ]; then
                 options=""
                 if [ -n "$setting" ]; then options="[arch=amd64 signed-by=${setting// /,}] "; fi
-                printf 'deb-src %shttp://download.proxmox.com/debian/%s bookworm %s\n' "$options" "$repo" "$component" >"$A/public.list"
+                printf 'deb-src %shttp://download.proxmox.com/debian/%s bookworm %s\n' "$options" "$repo" "$component" >"$A/z-public.list"
             else
-                cat >"$A/public.sources" <<EOF
+                cat >"$A/z-public.sources" <<EOF
 Types: deb-src
 URIs: http://download.proxmox.com/debian/$repo
 Suites: bookworm
 Components: $component
 EOF
-                if [ -n "$setting" ]; then printf 'Signed-By: %s\n' "$setting" >>"$A/public.sources"; fi
+                if [ -n "$setting" ]; then printf 'Signed-By: %s\n' "$setting" >>"$A/z-public.sources"; fi
             fi
             [ "$(status_of repos 2>/dev/null)" = todo ] || fail "conflicting $layout $repo $signing counted as done"
-            assert_apt_sources conflict "$A/pve-no-subscription.sources" "$A/public.$layout"
+            assert_apt_sources conflict "$A/pve-no-subscription.sources" "$A/z-public.$layout"
             keyring_enterprise_fixture bookworm
             rm -rf "$F/apt-before"
             cp -R "$F/etc/apt" "$F/apt-before"

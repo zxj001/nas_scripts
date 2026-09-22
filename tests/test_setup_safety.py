@@ -204,8 +204,50 @@ def test_incomplete_nvm_directory_preserved(tmp_path):
     assert (tmp_path / '.nvm/keep').read_text() == 'my data'
 
 
+@pytest.mark.parametrize('destination', ['firstmate', 'custom tools/firstmate'])
+def test_firstmate_install_location_and_repeat(tmp_path, destination):
+    options = '' if destination == 'firstmate' else ' --firstmate-dir ' + shlex.quote(str(tmp_path / destination))
+    body = r'''
+git() {
+    [ "$1" = clone ] || exit 99
+    [ "$2" = https://github.com/kunchenguid/firstmate ] || exit 99
+    mkdir -p "$3/.git"
+    echo clone >>"$HOME/clones"
+}
+'''
+    run(tmp_path, body + 'main --yes --only firstmate' + options)
+    result = run(tmp_path, body + 'main --status --only firstmate' + options)
+    assert 'done' in result.stdout
+    run(tmp_path, body + 'main --yes --only firstmate' + options)
+    assert (tmp_path / destination / '.git').is_dir()
+    assert (tmp_path / 'clones').read_text() == 'clone\n'
+
+
+@pytest.mark.parametrize('argument', ['', "''", '--yes'])
+def test_firstmate_missing_path_rejected_before_update(tmp_path, argument):
+    result = run(tmp_path, r'''
+self_update() { touch "$HOME/updated"; }
+main --firstmate-dir ''' + argument, success=False)
+    assert result.returncode == 2
+    assert not (tmp_path / 'updated').exists()
+
+
+def test_firstmate_relative_path(tmp_path):
+    run(tmp_path, r'''
+cd "$HOME"
+parse_args --firstmate-dir 'custom tools/firstmate'
+test "$FIRSTMATE_DIR" = "$HOME/custom tools/firstmate"
+''')
+
+
+def test_firstmate_custom_occupied_path_preserved(tmp_path):
+    (tmp_path / 'custom').symlink_to(tmp_path / 'missing')
+    run(tmp_path, 'main --yes --only firstmate --firstmate-dir "$HOME/custom"', success=False)
+    assert (tmp_path / 'custom').is_symlink()
+
+
 def test_firstmate_worktree_is_done_and_existing_path_preserved(tmp_path):
-    path = tmp_path / 'tools/firstmate'
+    path = tmp_path / 'firstmate'
     path.mkdir(parents=True)
     (path / '.git').write_text('gitdir: /some/worktree\n')
     run(tmp_path, 'check_firstmate; do_firstmate')
@@ -536,4 +578,109 @@ local_ipmi() { return 0; }
 have() { return 0; }
 sudo() { [ "$*" = '-n ipmitool -I open chassis status' ] || exit 99; return 1; }
 main --status --only power-restore
+''')
+
+
+SHELLFISH_STUBS = r'''
+crontab() {
+    case "$1" in
+        -l) if [ -f "$HOME/crontab" ]; then cat "$HOME/crontab"; else echo "no crontab for test" >&2; return 1; fi ;;
+        -) cat >"$HOME/crontab"; echo write >>"$HOME/crontab-writes" ;;
+        *) exit 99 ;;
+    esac
+}
+mkdir -p "$REPO_DIR/scripts"
+printf '#!/bin/sh\necho sent >>"$HOME/sent"\n' >"$REPO_DIR/scripts/shellfish_widget.sh"
+chmod +x "$REPO_DIR/scripts/shellfish_widget.sh"
+'''
+
+
+def test_shellfish_without_shell_integration_is_manual(tmp_path):
+    result = run(tmp_path, SHELLFISH_STUBS + r'''
+sudo() { exit 99; }
+main --status --only shellfish
+main --yes --only shellfish
+''')
+    assert 'manual' in result.stdout
+    assert 'Install Shell Integration' in result.stdout
+    assert not (tmp_path / 'crontab').exists()
+    assert not (tmp_path / 'sent').exists()
+
+
+def test_shellfish_installs_tools_keeps_crontab_and_repeats_cleanly(tmp_path):
+    (tmp_path / '.shellfishrc').write_text('widget() { :; }\n')
+    (tmp_path / 'crontab').write_text('0 3 * * * backup\n')
+    run(tmp_path, SHELLFISH_STUBS + r'''
+have() { [ "$1" != xxd ] || [ -f "$HOME/xxd" ]; }
+sudo() {
+    case "$*" in
+        'apt-get update') touch "$HOME/updated" ;;
+        'apt-get install -y openssl xxd curl cron') test -f "$HOME/updated"; touch "$HOME/xxd" ;;
+        *) exit 99 ;;
+    esac
+}
+main --yes --only shellfish
+main --yes --only shellfish
+main --status --only shellfish | grep -Eq '^shellfish +done$'
+''')
+    lines = (tmp_path / 'crontab').read_text().splitlines()
+    assert lines[0] == '0 3 * * * backup'
+    assert len(lines) == 2 and lines[1].startswith('*/15 * * * * ')
+    assert 'scripts/shellfish_widget.sh' in lines[1]
+    assert (tmp_path / 'crontab-writes').read_text() == 'write\n'
+    assert (tmp_path / 'sent').read_text() == 'sent\n'
+
+
+def test_shellfish_unreadable_crontab_left_alone(tmp_path):
+    (tmp_path / '.shellfishrc').write_text('')
+    run(tmp_path, SHELLFISH_STUBS + r'''
+have() { return 0; }
+crontab() {
+    case "$1" in
+        -l) echo 'crontab: permission denied' >&2; return 1 ;;
+        *) touch "$HOME/overwritten" ;;
+    esac
+}
+do_shellfish
+''', success=False)
+    assert not (tmp_path / 'overwritten').exists()
+
+
+def test_shellfish_not_applicable_on_macos(tmp_path):
+    result = run(tmp_path, r'''
+detect_os() { OS=macos; }
+main --yes --only shellfish
+''')
+    assert 'n/a' in result.stdout
+
+
+@pytest.mark.skipif(not Path('/proc/stat').exists(), reason='reads /proc')
+def test_shellfish_widget_print_sends_nothing(tmp_path):
+    script = Path(__file__).resolve().parents[1] / 'scripts/shellfish_widget.sh'
+    result = subprocess.run([str(script), '--print', '/', str(tmp_path)],
+                            env={'PATH': os.environ['PATH'], 'HOME': str(tmp_path)},
+                            text=True, capture_output=True)
+    assert result.returncode == 0, result.stderr
+    words = result.stdout.split()
+    assert words[:2] == ['cpu.fill', words[1]] and words[1].endswith('%')
+    assert words[3] == 'thermometer.medium'
+    assert words[6:9] == ['memorychip', words[7], 'Mem'] and words[7].endswith('%')
+    assert words[9:12] == ['internaldrive', words[10], 'Disk']
+    assert words[12] == 'internaldrive' and words[14] == tmp_path.name
+
+
+@pytest.mark.parametrize('missing', ['pip', 'venv'])
+def test_dev_tools_needs_python_pip_and_venv(tmp_path, missing):
+    run(tmp_path, r'''
+mkdir -p "$HOME/projects" "$HOME/tools"
+have() { return 0; }
+dpkg-query() { echo 'install ok installed'; }
+python3() {
+    case "$*" in
+        '-m pip --version') [ "$MISSING" != pip ] ;;
+        *) [ "$MISSING" != venv ] ;;
+    esac
+}
+MISSING=none check_dev_tools
+MISSING=''' + missing + r''' check_dev_tools && exit 1 || true
 ''')

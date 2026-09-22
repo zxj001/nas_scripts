@@ -1,6 +1,6 @@
 # setup.sh repeat-run and data preservation audit
 
-Scope: all 20 registered steps and the runner in `scripts/setup.sh`. This review
+Scope: all 21 registered steps and the runner in `scripts/setup.sh`. This review
 does not cover `proxmox_setup.sh` or recursively audit every external installer and
 package maintainer script. Tests use isolated homes and stub system operations;
 they are not a fresh Debian VM installation test.
@@ -38,7 +38,7 @@ they are not a fresh Debian VM installation test.
 | ssh-keys | Preserve existing authorized keys, validate pasted keys, avoid exact duplicate lines, and enforce SSH directory/file modes. Equivalent keys with different comments are not deduplicated. |
 | ssh-harden | Require a non-root user with a valid authorized key before writing. Preserve existing config and continue with an explicit skipped-hardening message when effective policy differs. Validate global policy and roll back only newly created config on failure. |
 | tailscale | Ensure HTTPS dependencies before first installation; reconnect an installed client without reinstalling it. Sign-in may still be interactive. |
-| dev-tools | Check curl, build tools, CA certificates, git, jq, rg, and directories on Debian. Install missing packages and create directories without deleting existing contents. |
+| dev-tools | Check curl, build tools, CA certificates, git, jq, rg, Python 3 with pip and venv, and directories on Debian. Install missing packages and create directories without deleting existing contents. |
 | gh | Skip an available CLI. Preserve existing apt keyring/source configuration; download a new key fully before publication. |
 | node | Skip a sufficiently new active Node. Reuse nvm, preserve custom directories/defaults, and install Node 22 without deleting older versions. A deliberately older default can cause this step to be offered again. |
 | codex | Skip an available CLI. On first installation, use the vendor installer or Homebrew. |
@@ -46,6 +46,7 @@ they are not a fresh Debian VM installation test.
 | claude | Skip an available CLI. First installation delegates to the vendor/Homebrew; append local-bin PATH once on Debian. |
 | herdr | Skip an available CLI. First installation delegates to the vendor; preserve existing Claude hook settings. |
 | firstmate | Recognize ordinary clones and worktrees (`.git` can be a file). Refuse an occupied non-checkout destination. Never reset or clean a checkout. |
+| shellfish | Debian only. `manual` until the iPhone app has written `~/.shellfishrc`; never edits that file. Installs openssl/xxd/curl/cron only if one is missing. Adds the widget cron entry once, keeps other entries, and refuses to write when the crontab cannot be read. |
 | gpu | Skip a working NVIDIA driver. Preserve apt sources, add only missing components, then install packages. Existing source detection is conservative text matching, not a full deb822 parser. |
 
 ## Practical limits

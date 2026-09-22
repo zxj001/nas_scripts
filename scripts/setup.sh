@@ -9,6 +9,7 @@ set -Eeuo pipefail
 
 REPO_URL="https://github.com/zxj001/nas_scripts"
 REPO_DIR="$HOME/tools/nas_scripts"
+FIRSTMATE_DIR="$HOME/firstmate"
 
 # Ordered step registry. Every name here needs three functions, with "-"
 # replaced by "_":
@@ -25,15 +26,17 @@ REPO_DIR="$HOME/tools/nas_scripts"
 #
 # brew comes first: every other macOS step installs through it. sudo comes
 # next: every other Debian step shells out to sudo.
-STEPS=(brew sudo upgrade guest-agent no-sleep power-restore ssh ssh-keys ssh-harden tailscale dev-tools gh node codex pi claude herdr firstmate gpu)
+STEPS=(brew sudo upgrade guest-agent no-sleep power-restore ssh ssh-keys ssh-harden tailscale dev-tools gh node codex pi claude herdr firstmate shellfish gpu)
 
 usage() {
     cat <<'EOF'
-Usage: setup-machine [--status] [--yes] [--only a,b] [--help]
+Usage: setup-machine [--status] [--yes] [--only a,b] [--firstmate-dir PATH] [--help]
 
   --status     run the checks, print the table and exit
   --yes        run every not-done step without prompting
   --only a,b   only these steps, comma separated
+  --firstmate-dir PATH
+               FirstMate checkout location (default: ~/firstmate)
   --help       this text
 EOF
 }
@@ -390,17 +393,24 @@ check_dev_tools() {
         have curl && have make && have gcc && have g++ &&
             [ "$(dpkg-query -W -f='${Status}' ca-certificates 2>/dev/null)" = 'install ok installed' ] || return 1
     fi
-    have git && have jq && have rg &&
+    have git && have jq && have rg && python_ok &&
         [ -d "$HOME/projects" ] && [ -d "$HOME/tools" ]
+}
+# pip, plus venv: Debian's python3 refuses system-wide pip installs (PEP 668),
+# so pip is only usable inside a venv, and python3-venv brings ensurepip.
+python_ok() {
+    have python3 && python3 -m pip --version >/dev/null 2>&1 || return 1
+    [ "$OS" != debian ] || python3 -c 'import ensurepip, venv' 2>/dev/null
 }
 default_dev_tools() { echo yes; }
 do_dev_tools() {
     case "$OS" in
         debian)
             sudo apt-get update
-            sudo apt-get install -y git curl ca-certificates build-essential jq ripgrep
+            sudo apt-get install -y git curl ca-certificates build-essential jq ripgrep \
+                python3 python3-pip python3-venv
             ;;
-        macos) brew install jq ripgrep ;;  # git comes with the Xcode CLT
+        macos) brew install jq ripgrep python ;;  # git comes with the Xcode CLT
     esac
     mkdir -p "$HOME/projects" "$HOME/tools"
 }
@@ -501,16 +511,63 @@ do_herdr() {
     fi
 }
 
-check_firstmate() { [ -e "$HOME/tools/firstmate/.git" ]; }
+check_firstmate() { [ -e "$FIRSTMATE_DIR/.git" ]; }
 default_firstmate() { echo yes; }
 do_firstmate() {
     if check_firstmate; then return 0; fi
-    if [ -e "$HOME/tools/firstmate" ] || [ -L "$HOME/tools/firstmate" ]; then
-        echo "refusing to clone over existing path: $HOME/tools/firstmate" >&2
+    if [ -e "$FIRSTMATE_DIR" ] || [ -L "$FIRSTMATE_DIR" ]; then
+        echo "refusing to clone over existing path: $FIRSTMATE_DIR" >&2
         return 1
     fi
-    mkdir -p "$HOME/tools"
-    git clone https://github.com/kunchenguid/firstmate "$HOME/tools/firstmate"
+    mkdir -p "$(dirname "$FIRSTMATE_DIR")"
+    git clone https://github.com/kunchenguid/firstmate "$FIRSTMATE_DIR"
+}
+
+# ShellFish widget (docs/08-shellfish-widgets.md): cron pushes CPU, CPU temp,
+# memory and disk usage to the iPhone. The app writes ~/.shellfishrc; until it
+# has, there is nothing here but guidance. Its widget function needs openssl,
+# xxd and curl: without xxd it still exits 0 but pushes a payload the phone
+# cannot decrypt. The stats come from /proc, so this is Debian only.
+SHELLFISH_WIDGET="scripts/shellfish_widget.sh"
+shellfish_tools() { have openssl && have xxd && have curl && have crontab; }
+shellfish_cron_line() {
+    printf '*/15 * * * * %q >/dev/null 2>&1\n' "$REPO_DIR/$SHELLFISH_WIDGET"
+}
+check_shellfish() {
+    [ "$OS" = debian ] || return 2
+    [ -e "$HOME/.shellfishrc" ] || return 3
+    shellfish_tools || return 1
+    crontab -l 2>/dev/null | grep -qF "$SHELLFISH_WIDGET"
+}
+default_shellfish() { debian_only; }
+do_shellfish() {
+    local current
+    if [ ! -e "$HOME/.shellfishrc" ]; then
+        log "in ShellFish on the iPhone: this server's settings -> Install Shell Integration, then rerun"
+        log "see docs/08-shellfish-widgets.md"
+        return 0
+    fi
+    if ! shellfish_tools; then
+        sudo apt-get update
+        sudo apt-get install -y openssl xxd curl cron
+    fi
+    if [ ! -x "$REPO_DIR/$SHELLFISH_WIDGET" ]; then
+        echo "missing $REPO_DIR/$SHELLFISH_WIDGET - rerun after the repo is cloned" >&2
+        return 1
+    fi
+    # Keep every existing entry; an unreadable crontab is not an empty one.
+    if ! current="$(crontab -l 2>&1)"; then
+        if [[ "$current" != "no crontab for "* ]]; then
+            echo "cannot read crontab, leaving it alone: $current" >&2
+            return 1
+        fi
+        current=""
+    fi
+    if ! grep -qF "$SHELLFISH_WIDGET" <<<"$current"; then
+        printf '%s%s\n' "${current:+$current$'\n'}" "$(shellfish_cron_line)" | crontab -
+    fi
+    "$REPO_DIR/$SHELLFISH_WIDGET"
+    log "widget sent; add a ShellFish widget on the iPhone Home Screen if you have not"
 }
 
 # An NVIDIA card, if there is one. Debian installs the driver; macOS has none,
@@ -652,10 +709,23 @@ parse_args() {
     OPT_YES=0
     OPT_HELP=0
     OPT_ONLY=""
+    FIRSTMATE_DIR="$HOME/firstmate"
     while [ $# -gt 0 ]; do
         case "$1" in
             --status) OPT_STATUS=1 ;;
             --yes) OPT_YES=1 ;;
+            --firstmate-dir)
+                if [ $# -lt 2 ] || [ -z "$2" ] || [[ "$2" == --* ]]; then
+                    echo "--firstmate-dir needs a checkout path" >&2
+                    exit 2
+                fi
+                # Normalize relative paths so git cannot treat them as options.
+                case "$2" in
+                    /*) FIRSTMATE_DIR="$2" ;;
+                    *) FIRSTMATE_DIR="$PWD/$2" ;;
+                esac
+                shift
+                ;;
             --only)
                 if [ $# -lt 2 ]; then
                     echo "--only needs a step list, e.g. --only node,pi" >&2

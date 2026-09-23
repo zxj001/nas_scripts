@@ -22,24 +22,41 @@ sudo, changes nothing, and just prints the check. A runner that is half set up (
 VM rebooted mid-install, or the service was uninstalled) is completed; a token is only
 asked for when a runner still has to be registered.
 
+## One runner per VM
+
+Each runner gets a VM of its own. Runners that share a machine share its Docker daemon,
+host ports, `/tmp` and home directories, so concurrent jobs break each other (one job's
+`docker compose down` or `docker logout` hits the other). A VM of its own also means a
+broken runner is fixed by deleting the VM and cloning a new one.
+
+The script enforces this: `install` will not register a second runner on a machine, and
+`check` warns (`WARN`) on older machines that already have several, like `debianbeelink`.
+
+Suggested VM: Debian 13 without a desktop, 2 vCPU, 4 GB RAM, 40 GB disk (thin
+provisioned); more CPU and RAM for heavy builds. For a new runner VM in Proxmox:
+
+1. Clone the Debian template (or install Debian, [docs/01-debian-install.md](docs/01-debian-install.md)).
+2. Give it a unique hostname: it becomes the runner name, and registration fails if the
+   name is taken, so a clone that kept the template's hostname cannot take over another
+   runner. `sudo hostnamectl set-hostname gh-runner-3`
+3. Set up the runner as below.
+
 ## Set up a runner
 
 1. Get a registration token: as an org admin, open
    <https://github.com/organizations/Nicu-Labs/settings/actions/runners/new> and copy
-   the value after `--token` in the `config.sh` line. One token registers any number of
-   runners, on any machines, for an hour; after that, reload the page for a new one.
+   the value after `--token` in the `config.sh` line. One token works for an hour, on as
+   many VMs as you set up in that time; after that, reload the page for a new one.
 2. On the machine (a fresh VM needs only root and network):
 
    ```sh
    curl -fsSLO https://raw.githubusercontent.com/zxj001/nas_scripts/main/scripts/ghrunner_setup.sh
-   bash ghrunner_setup.sh install --token AAAA...             # one runner, named after the host
-   bash ghrunner_setup.sh install --token AAAA... --count 3   # three: HOST-1, HOST-2, HOST-3
+   bash ghrunner_setup.sh install --token AAAA...    # the runner is named after the host
    ```
 
    Leave out `--token` and the script asks for it (input hidden), which keeps it out of
    shell history; `GHRUNNER_TOKEN=AAAA...` in the environment works too. From a checkout,
    `bash scripts/ghrunner_setup.sh install ...` does the same.
-   Rerunning with a larger `--count` adds the missing runners and leaves the rest alone.
 3. The runner appears as **Idle** on the org's runners page.
 4. Add the machine and runner name to [Local Machines](README.md#local-machines).
 
@@ -48,12 +65,11 @@ asked for when a runner still has to be registered.
 | Option | Required | Default | Notes |
 |--------|----------|---------|-------|
 | `--token` | yes | asked for | From step 1. Also read from `$GHRUNNER_TOKEN`, or asked for on the terminal. With no terminal either, the script tries `gh api` as a last resort, which needs `gh auth refresh -s admin:org` first. |
-| `--count` | no | 1 | Set up N runners on this machine, named `NAME-1`..`NAME-N`, from the one token. |
 | `--url` | no | `https://github.com/Nicu-Labs` | The org. A repo URL (`https://github.com/Nicu-Labs/REPO`) makes a runner for that repo only. |
-| `--name` | no | hostname | Must be unique in the org: registration uses `--replace`, so a taken name moves to this machine. With `--count` it is the prefix. |
+| `--name` | no | hostname | Must be unique in the org; registration fails if it is taken. Prefer setting the hostname instead. |
 | `--labels` | no | - | Extra labels for `runs-on:`, comma separated. `self-hosted`, `linux` and `X64`/`ARM64` are always added. |
 | `--user` | no | `runner` as root, else you | The account the service runs as. Never `root`. |
-| `--dir` | no | `~USER/actions-runner-NAME` | Where the runner lives. Not with `--count`. |
+| `--dir` | no | `~USER/actions-runner-NAME` | Where the runner lives. |
 
 Run as root, or as the runner user with sudo. A workflow picks the runner with
 `runs-on: self-hosted` or with its labels, e.g. `runs-on: [self-hosted, docker]`.
@@ -90,7 +106,7 @@ bash ghrunner_setup.sh check --name build-vm-1
   ok    disk 24% used
 ```
 
-A `FAIL` line names what is wrong, and the command (like `install`) exits 1. Rerunning
+A `WARN` line flags a machine with more than one runner. A `FAIL` line names what is wrong, and the command (like `install`) exits 1. Rerunning
 `install` with the same options fixes anything it can. The check sees this machine only;
 whether GitHub shows the runner as **Idle** is on the org's runners page.
 

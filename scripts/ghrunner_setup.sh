@@ -6,14 +6,14 @@
 # Run it as root (the runner user is created) or as the runner user with sudo.
 # Prerequisites (curl, libicu, Docker) are installed with apt, and the runner
 # user joins the docker group so jobs can use Docker. Each runner lives in its
-# own directory, so one machine can host several.
+# own directory. One runner per VM: install will not add a second runner to a
+# machine, and check warns about machines that already have several.
 #
 #   # fresh VM: token from GitHub > Settings > Actions > Runners > New runner
 #   curl -fsSLO https://raw.githubusercontent.com/zxj001/nas_scripts/main/scripts/ghrunner_setup.sh
 #   bash ghrunner_setup.sh install --token AAAA...
 #
 #   scripts/ghrunner_setup.sh install                    # asks for the token
-#   scripts/ghrunner_setup.sh install --token AAAA... --count 3   # HOST-1..HOST-3
 #   scripts/ghrunner_setup.sh install --name build-vm-1 --labels docker
 #   scripts/ghrunner_setup.sh install --url https://github.com/OWNER/REPO
 #   scripts/ghrunner_setup.sh check                 # every runner here: registered,
@@ -35,10 +35,10 @@
 # Options: --url (default: https://github.com/Nicu-Labs, the org; a repo URL
 # makes a runner for that repo only), --name (default: hostname), --user
 # (runner account; default: you, or `runner` when run as root), --dir
-# (default: ~USER/actions-runner-NAME), --labels (comma separated, added to self-hosted,linux,ARCH), --count N
-# (install N runners named NAME-1..NAME-N), --token (a registration or removal
-# token from the runners page; also read from $GHRUNNER_TOKEN, asked for when
-# missing, or as a last resort requested with `gh`, which needs admin:org).
+# (default: ~USER/actions-runner-NAME), --labels (comma separated, added to
+# self-hosted,linux,ARCH), --token (a registration or removal token from the
+# runners page; also read from $GHRUNNER_TOKEN, asked for when missing, or as a
+# last resort requested with `gh`, which needs admin:org).
 set -euo pipefail
 # dockerd, ldconfig and usermod live here, off a normal Debian user's PATH.
 PATH=$PATH:/usr/sbin:/sbin
@@ -409,6 +409,11 @@ check_runner() {
     else
         bad "ghrunner-cleanup.timer not active"
     fi
+    local runners
+    runners=$(runner_dirs | grep -c . || true)
+    if ((runners > 1)); then
+        echo "  WARN  $runners runners on this machine; one per VM keeps jobs from colliding"
+    fi
     used=$(disk_percent "$DIR")
     if ((used < limit)); then ok "disk ${used}% used"; else bad "disk ${used}% used (limit ${limit}%)"; fi
     return "$problems"
@@ -425,7 +430,9 @@ install_runner() {
     if ! runner_has .runner; then
         local labels=${LABELS:+--labels $LABELS}
         # shellcheck disable=SC2086  # $labels is empty or two words
-        (cd "$DIR" && as_runner ./config.sh --unattended --replace --url "$URL" \
+        # No --replace: a name already in use (say a cloned VM that kept its
+        # hostname) fails here instead of taking over the other runner.
+        (cd "$DIR" && as_runner ./config.sh --unattended --url "$URL" \
             --token "$token" --name "$NAME" --work _work $labels)
     fi
 
@@ -435,61 +442,38 @@ install_runner() {
     install_cleanup_timer
 }
 
-# The runners this command is about: NAME, or NAME-1..NAME-N with --count.
-selected_names() {
-    local i
-    if ((COUNT == 1)); then
-        echo "$NAME"
+# Set up whatever is missing, then check the runner. A runner that is already
+# registered needs no token, so a rerun only inspects and reports. A machine
+# gets one runner: runners sharing a VM share its Docker daemon, ports and
+# home directories, and break each other's jobs.
+cmd_install() {
+    local token='' dir
+    if ! runner_has .runner; then
+        while read -r dir; do
+            [[ -z $dir || $dir == "$DIR" ]] && continue
+            die "this machine already has a runner in $dir; set up one runner per VM (check shows it)"
+        done < <(runner_dirs)
+        token=$(get_token registration)
+    fi
+    install_runner "$token"
+    check_runner
+}
+
+# Check the --name runner, or every runner service on this machine.
+cmd_check() {
+    local dirs dir problems=0
+    if ((NAME_SET || DIR_SET)); then
+        check_runner
         return
     fi
-    [[ $DIR_SET -eq 0 ]] || die "--dir cannot be combined with --count"
-    for ((i = 1; i <= COUNT; i++)); do echo "$NAME-$i"; done
-}
-
-select_runner() {
-    NAME=$1
-    ((DIR_SET)) || DIR=$(runner_dir "$NAME")
-}
-
-# Set up whatever is missing, then check every runner. A runner that is
-# already registered needs no token, so a rerun only inspects and reports.
-cmd_install() {
-    local names name token='' problems=0
-    mapfile -t names < <(selected_names)
-    for name in "${names[@]}"; do
-        select_runner "$name"
-        runner_has .runner || { token=$(get_token registration); break; }
-    done
-    for name in "${names[@]}"; do
-        select_runner "$name"
-        install_runner "$token"
-    done
-    for name in "${names[@]}"; do
-        select_runner "$name"
+    mapfile -t dirs < <(runner_dirs)
+    ((${#dirs[@]})) || die "no runner services on this machine"
+    URL=''
+    for dir in "${dirs[@]}"; do
+        DIR=$dir NAME=${dir##*/actions-runner-}
+        RUNNER_USER=$(stat -c %U "$dir")
         check_runner || problems=$((problems + 1))
     done
-    ((problems == 0))
-}
-
-# Check the named runners, or with no --name every runner service here.
-cmd_check() {
-    local names name dir problems=0
-    if ((NAME_SET || COUNT > 1)); then
-        mapfile -t names < <(selected_names)
-        for name in "${names[@]}"; do
-            select_runner "$name"
-            check_runner || problems=$((problems + 1))
-        done
-    else
-        mapfile -t names < <(runner_dirs)
-        ((${#names[@]})) || die "no runner services on this machine"
-        URL=''
-        for dir in "${names[@]}"; do
-            DIR=$dir NAME=${dir##*/actions-runner-}
-            RUNNER_USER=$(stat -c %U "$dir")
-            check_runner || problems=$((problems + 1))
-        done
-    fi
     ((problems == 0))
 }
 
@@ -508,7 +492,7 @@ cmd_unregister() {
 
 COMMAND=${1:-}
 [[ -n $COMMAND ]] && shift
-URL=https://github.com/Nicu-Labs NAME=$(hostname) DIR='' LABELS='' TOKEN='' RUNNER_USER='' DRY_RUN=0 COUNT=1 NAME_SET=0
+URL=https://github.com/Nicu-Labs NAME=$(hostname) DIR='' LABELS='' TOKEN='' RUNNER_USER='' DRY_RUN=0 NAME_SET=0
 while (($#)); do
     case $1 in
         --url) URL=$2; shift 2 ;;
@@ -518,7 +502,6 @@ while (($#)); do
         --labels) LABELS=$2; shift 2 ;;
         --token) TOKEN=$2; shift 2 ;;
         --dry-run) DRY_RUN=1; shift ;;
-        --count) COUNT=$2; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) die "unknown option $1 (see --help)" ;;
     esac
@@ -527,7 +510,6 @@ if [[ -z $RUNNER_USER ]]; then
     if [[ $EUID -eq 0 ]]; then RUNNER_USER=runner; else RUNNER_USER=$(id -un); fi
 fi
 [[ $RUNNER_USER != root ]] || die "the runner cannot run as root; pick another --user"
-[[ $COUNT =~ ^[1-9][0-9]*$ ]] || die "--count must be a positive number"
 
 runner_dir() {
     local home

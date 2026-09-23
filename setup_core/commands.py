@@ -1,5 +1,6 @@
 """One command boundary: explicit arguments, environment and cancellation."""
 
+import io
 import os
 import re
 import signal
@@ -9,6 +10,15 @@ from dataclasses import dataclass
 
 class CommandError(RuntimeError):
     pass
+
+
+def terminal():
+    """The controlling terminal, for reading and writing text.
+
+    Unbuffered binary underneath: a tty is not seekable, and text-mode "r+"
+    (BufferedRandom) refuses to open anything that is not.
+    """
+    return io.TextIOWrapper(open("/dev/tty", "r+b", buffering=0), write_through=True)
 
 
 def redact(text):
@@ -33,8 +43,8 @@ def execute(args, *, env, allowed=(0,), interactive=False, timeout=None, emit=Fa
     # sudo or crontab warning is not configuration, JSON or a file's content).
     errors = ""
     if interactive:
-        with open("/dev/tty", "r+") as terminal:
-            rc = subprocess.call(args, env=env, stdin=terminal, stdout=terminal, stderr=terminal)
+        with terminal() as tty:
+            rc = subprocess.call(args, env=env, stdin=tty, stdout=tty, stderr=tty)
         output = ""
     else:
         process = subprocess.Popen(

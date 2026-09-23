@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 
 from setup_core.backend import Backend
+from setup_core.commands import terminal
 from setup_core.context import environment
 from setup_core.model import COMPLETE, missing_providers, select
 from setup_core.profiles import registry
@@ -159,17 +160,16 @@ def main():
         tty = False
         if not args.status:
             try:
-                with open("/dev/tty", "r+"):
+                with terminal():
                     tty = True
             except OSError:
                 pass
         interactive = tty and not args.yes
 
         def prompt(message):
-            with open("/dev/tty", "r+") as terminal:
-                terminal.write(message)
-                terminal.flush()
-                return terminal.readline().strip()
+            with terminal() as stream:
+                stream.write(message)
+                return stream.readline().strip()
 
         firstmate = args.firstmate_dir
         if firstmate is not None:

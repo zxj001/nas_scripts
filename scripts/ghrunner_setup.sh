@@ -4,8 +4,9 @@
 # Rerunning install is safe: it only adds what is missing (no token needed
 # once registered) and ends by checking each runner, exiting 1 on a problem.
 # Run it as root (the runner user is created) or as the runner user with sudo.
-# Prerequisites (curl, libicu, Docker) are installed with apt, and the runner
-# user joins the docker group so jobs can use Docker. Each runner lives in its
+# Prerequisites are installed with apt, without recommended packages: git, jq,
+# unzip, zip, curl, the SSH server, libicu, and Docker (Compose, Buildx), whose
+# docker group the runner user joins. No desktop is installed. Each runner lives in its
 # own directory. One runner per VM: install will not add a second runner to a
 # machine, and check warns about machines that already have several.
 #
@@ -45,7 +46,7 @@ set -euo pipefail
 PATH=$PATH:/usr/sbin:/sbin
 
 usage() {
-    sed -n '2,42p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,43p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 die() {
@@ -84,30 +85,48 @@ ensure_user() {
     as_root useradd --create-home --shell /bin/bash "$RUNNER_USER"
 }
 
-# curl for the download, and the newest libicu this Debian release ships
-# (the runner's own installdependencies.sh lags behind new releases).
+# What a runner VM has besides the runner: a headless server, reachable over
+# SSH, with the tools workflows and actions/checkout expect. Installed without
+# recommended packages, so nothing else (least of all a desktop) comes along.
+BASE_PACKAGES=(ca-certificates curl git jq unzip zip xz-utils openssh-server)
+
+# The packages among "$@" that are not installed.
+missing_packages() {
+    local pkg
+    for pkg in "$@"; do
+        dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q 'ok installed' || echo "$pkg"
+    done
+}
+
+# The base packages, the newest libicu this Debian release ships (the runner
+# needs one), and a running SSH server.
 ensure_packages() {
-    local icu="" need=()
-    command -v curl >/dev/null || need+=(curl ca-certificates)
+    local icu need
+    mapfile -t need < <(missing_packages "${BASE_PACKAGES[@]}")
     if ! ldconfig -p | grep -q libicu; then
         apt_get update
         icu=$(apt-cache pkgnames libicu | grep -E '^libicu[0-9]+$' | sort -V | tail -n1)
         [[ -n $icu ]] || die "no libicu package found in apt"
         need+=("$icu")
     fi
-    ((${#need[@]})) || return 0
-    echo "Installing ${need[*]}"
-    [[ -n $icu ]] || apt_get update
-    apt_get install -y "${need[@]}" >/dev/null
+    if ((${#need[@]})); then
+        echo "Installing ${need[*]}"
+        apt_get update
+        apt_get install -y --no-install-recommends "${need[@]}" >/dev/null
+    fi
+    if ! { systemctl is-enabled --quiet ssh && systemctl is-active --quiet ssh; }; then
+        as_root systemctl enable --now ssh
+    fi
 }
 
-# Docker Engine and Compose from Debian (as setup_tasks/docker.py installs
-# them), unless Docker's own docker-ce is already there. The runner user joins
+# Docker Engine, Compose and Buildx from Debian (as setup_tasks/docker.py
+# installs them), plus AppArmor to confine containers, unless Docker's own
+# docker-ce is already there. The runner user joins
 # the docker group; a running runner service is stopped so the start below
 # picks the membership up.
 ensure_docker() {
     local need=()
-    command -v dockerd >/dev/null || need+=(docker.io)
+    command -v dockerd >/dev/null || need+=(docker.io apparmor)
     command -v docker >/dev/null || need+=(docker-cli)
     if ! docker compose version >/dev/null 2>&1; then
         if dpkg-query -W -f='${Status}' docker-ce 2>/dev/null | grep -q 'install ok installed'; then
@@ -115,10 +134,17 @@ ensure_docker() {
         fi
         need+=(docker-compose)
     fi
+    if ! docker buildx version >/dev/null 2>&1; then
+        if dpkg-query -W -f='${Status}' docker-ce 2>/dev/null | grep -q 'install ok installed'; then
+            echo "warning: Docker CE has no Buildx; install docker-buildx-plugin from Docker's apt repository" >&2
+        else
+            need+=(docker-buildx)
+        fi
+    fi
     if ((${#need[@]})); then
         echo "Installing ${need[*]}"
         apt_get update
-        apt_get install -y "${need[@]}" >/dev/null
+        apt_get install -y --no-install-recommends "${need[@]}" >/dev/null
     fi
     if ! { systemctl is-enabled --quiet docker && systemctl is-active --quiet docker; }; then
         as_root systemctl enable --now docker
@@ -448,6 +474,7 @@ check_runner() {
     fi
     if runner_busy "$DIR"; then ok "running a job"; fi
     if systemctl is-active --quiet docker; then ok "docker running"; else bad "docker not running"; fi
+    if systemctl is-active --quiet ssh; then ok "ssh running"; else bad "ssh not running"; fi
     if id -nG "$RUNNER_USER" 2>/dev/null | tr ' ' '\n' | grep -qx docker; then
         ok "$RUNNER_USER in the docker group"
     else

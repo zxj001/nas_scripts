@@ -6,9 +6,17 @@ Runners for the **Nicu-Labs** GitHub org (`https://github.com/Nicu-Labs`, with t
 
 What `install` does:
 
-- Installs `curl`, the newest `libicu` apt has, and Docker Engine + Compose (Debian's
-  `docker.io`, or an existing `docker-ce`). Docker is required: jobs can use it
-  without sudo because the runner user joins the `docker` group.
+- Installs what a headless runner VM needs, without recommended packages so nothing else
+  (least of all a desktop) comes along:
+  - `git` (so `actions/checkout` makes a real clone), `jq`, `unzip`, `zip`, `xz-utils`,
+    `curl`, `ca-certificates`;
+  - `openssh-server`, enabled and running, so the VM can be reached over SSH;
+  - the newest `libicu` apt has (the runner needs it);
+  - Docker Engine, Compose and Buildx (Debian's `docker.io`, `docker-compose`,
+    `docker-buildx`, plus `apparmor`), or an existing `docker-ce`. Docker is required:
+    jobs can use it without sudo because the runner user joins the `docker` group.
+  Language toolchains (Node, Python, Go, Java) are not preinstalled: `actions/setup-node`
+  and the like download them per workflow.
 - Creates the `runner` account when run as root (the runner refuses to run as root).
 - Downloads the latest runner release and checks its SHA-256 against the release notes.
 - Registers the runner with the org and runs it as a systemd service
@@ -42,7 +50,9 @@ runner ~0.7 GB, logs and apt cache). Building a web app adds ~5-12 GB: the check
 two tool versions during an upgrade, before cleanup's 80% limit (32 GB). 25 GB is a
 workable minimum. For a new runner VM in Proxmox:
 
-1. Clone the Debian template (or install Debian, [docs/01-debian-install.md](docs/01-debian-install.md)).
+1. Clone the Debian template, or install Debian 13 ([docs/01-debian-install.md](docs/01-debian-install.md))
+   **without a desktop**: in software selection tick only *SSH server* and *standard
+   system utilities*. A runner needs no GUI, and `install` makes sure SSH is running.
 2. Give it a unique hostname: it becomes the runner name, and registration fails if the
    name is taken, so a clone that kept the template's hostname cannot take over another
    runner. `sudo hostnamectl set-hostname gh-runner-3`

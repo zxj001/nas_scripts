@@ -13,6 +13,7 @@ Helpers live in `scripts/`. Run them from the repo root, e.g.
 | `scripts/setup.sh` | Set up a Debian 13 or macOS machine the way [docs/](docs/README.md) describes; `--status` shows what is left to do |
 | `scripts/proxmox_setup.sh` | The same for the Proxmox VE host: root SSH keys, SSH hardening, Tailscale, optional subnet router, ShellFish widget ([docs/pve-host.md](docs/pve-host.md)) |
 | `scripts/shellfish_widget.sh` | Push the machine name, CPU, CPU temperature, memory and disk usage to the ShellFish iPhone widget; setup installs it and cron runs it every 15 minutes. `setup_adapters/shellfish_widget.sh` links to it so it ships in the setup bundle ([docs/08-shellfish-widgets.md](docs/08-shellfish-widgets.md)) |
+| `scripts/ghrunner_setup.sh` | Set up a GitHub Actions runner for the Nicu-Labs org on any Debian machine or VM, with Docker and an hourly disk cleanup timer; the only input is a registration token (`--token`, or asked for), and `--count N` sets up several on one machine. Safe to rerun: an existing setup is only checked (`check` does the same) ([GITHUB_RUNNER.md](GITHUB_RUNNER.md)) |
 | `scripts/disk_check.py` | Disk space on the Plex folders' drives plus drive health; exits 1 if anything needs attention (cron-friendly) |
 | `scripts/find_largest_files.py` | List the largest files under the Plex folders (or given directories) |
 | `scripts/defrag.py` | Find the most fragmented files using `filefrag`; `--defrag` runs `e4defrag` on them |
@@ -66,7 +67,8 @@ Beelink AZW EQ, Debian 13 (trixie), x86-64. Primary home server.
   - `/media/jasonz001/Drive2` (`/dev/sdb1`) - Plex2: Anime, Anime_Movies, TV_Shows, Music, Backups, Software
 - **Services running:** `plexmediaserver` (32400), `docker`, `ssh`, and three GitHub
   Actions runners (`Nicu-Labs-trip-planner.debianbeelink`, `Nicu-Labs.debianbeelink-2`,
-  `Nicu-Labs.debianbeelink-3`) - see GITHUB_RUNNER.md
+  `Nicu-Labs.debianbeelink-3`) - see [GITHUB_RUNNER.md](GITHUB_RUNNER.md); new runners
+  are set up with `scripts/ghrunner_setup.sh`
 - **Enabled but not currently running:** `mcbedrock` (Minecraft Bedrock, see MINECRAFT.md)
 - **Ports open on the LAN:** 22 (ssh), 80, 32400 (Plex), 5434 + 33314 (Postgres
   containers), 9004/9005 (MinIO container)

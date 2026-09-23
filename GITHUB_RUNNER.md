@@ -1,3 +1,141 @@
+# GitHub Actions self-hosted runners
+
+Runners for the **Nicu-Labs** GitHub org (`https://github.com/Nicu-Labs`, with the hyphen).
+`scripts/ghrunner_setup.sh` sets one up on any Debian machine or VM, and
+`scripts/ghrunner_setup.sh --help` lists every command.
+
+What `install` does:
+
+- Installs `curl`, the newest `libicu` apt has, and Docker Engine + Compose (Debian's
+  `docker.io`, or an existing `docker-ce`). Docker is required: jobs can use it
+  without sudo because the runner user joins the `docker` group.
+- Creates the `runner` account when run as root (the runner refuses to run as root).
+- Downloads the latest runner release and checks its SHA-256 against the release notes.
+- Registers the runner with the org and runs it as a systemd service
+  (`actions.runner.Nicu-Labs.<name>.service`), with the needrestart exclusion below.
+- Installs `ghrunner-cleanup.timer`, which keeps disk use in check ([below](#disk-cleanup-and-monitoring)).
+- Checks each runner and prints the result (see [Checking runners](#checking-runners)).
+
+`install` is idempotent. Every step first looks at what is already there and only does
+what is missing, so a rerun on a machine that is set up asks for no token, needs no
+sudo, changes nothing, and just prints the check. A runner that is half set up (say the
+VM rebooted mid-install, or the service was uninstalled) is completed; a token is only
+asked for when a runner still has to be registered.
+
+## Set up a runner
+
+1. Get a registration token: as an org admin, open
+   <https://github.com/organizations/Nicu-Labs/settings/actions/runners/new> and copy
+   the value after `--token` in the `config.sh` line. One token registers any number of
+   runners, on any machines, for an hour; after that, reload the page for a new one.
+2. On the machine (a fresh VM needs only root and network):
+
+   ```sh
+   curl -fsSLO https://raw.githubusercontent.com/zxj001/nas_scripts/main/scripts/ghrunner_setup.sh
+   bash ghrunner_setup.sh install --token AAAA...             # one runner, named after the host
+   bash ghrunner_setup.sh install --token AAAA... --count 3   # three: HOST-1, HOST-2, HOST-3
+   ```
+
+   Leave out `--token` and the script asks for it (input hidden), which keeps it out of
+   shell history; `GHRUNNER_TOKEN=AAAA...` in the environment works too. From a checkout,
+   `bash scripts/ghrunner_setup.sh install ...` does the same.
+   Rerunning with a larger `--count` adds the missing runners and leaves the rest alone.
+3. The runner appears as **Idle** on the org's runners page.
+4. Add the machine and runner name to [Local Machines](README.md#local-machines).
+
+### Inputs
+
+| Option | Required | Default | Notes |
+|--------|----------|---------|-------|
+| `--token` | yes | asked for | From step 1. Also read from `$GHRUNNER_TOKEN`, or asked for on the terminal. With no terminal either, the script tries `gh api` as a last resort, which needs `gh auth refresh -s admin:org` first. |
+| `--count` | no | 1 | Set up N runners on this machine, named `NAME-1`..`NAME-N`, from the one token. |
+| `--url` | no | `https://github.com/Nicu-Labs` | The org. A repo URL (`https://github.com/Nicu-Labs/REPO`) makes a runner for that repo only. |
+| `--name` | no | hostname | Must be unique in the org: registration uses `--replace`, so a taken name moves to this machine. With `--count` it is the prefix. |
+| `--labels` | no | - | Extra labels for `runs-on:`, comma separated. `self-hosted`, `linux` and `X64`/`ARM64` are always added. |
+| `--user` | no | `runner` as root, else you | The account the service runs as. Never `root`. |
+| `--dir` | no | `~USER/actions-runner-NAME` | Where the runner lives. Not with `--count`. |
+
+Run as root, or as the runner user with sudo. A workflow picks the runner with
+`runs-on: self-hosted` or with its labels, e.g. `runs-on: [self-hosted, docker]`.
+
+### Managing a runner
+
+Pass the same `--name` (and `--user` or `--url` if they were not the defaults) used at install:
+
+```sh
+bash ghrunner_setup.sh status --name build-vm-1
+bash ghrunner_setup.sh stop --name build-vm-1        # start works the same
+bash ghrunner_setup.sh uninstall --name build-vm-1   # remove the service, keep the registration
+bash ghrunner_setup.sh unregister --name build-vm-1 --token BBBB...
+```
+
+`unregister` also removes the runner from the org; its token is the removal token from the
+runner's **...** menu > **Remove** on the org runners page (or fetched with `gh`). Delete the
+runner directory afterwards if the machine is staying.
+
+### Checking runners
+
+```sh
+bash ghrunner_setup.sh check                  # every runner service on this machine
+bash ghrunner_setup.sh check --name build-vm-1
+```
+
+```
+== Runner build-vm-1 (/home/runner/actions-runner-build-vm-1)
+  ok    registered as build-vm-1 with https://github.com/Nicu-Labs
+  ok    service actions.runner.Nicu-Labs.build-vm-1.service running
+  ok    docker running
+  ok    runner in the docker group
+  ok    cleanup timer active, next Wed 2026-09-23 15:07:12 PDT
+  ok    disk 24% used
+```
+
+A `FAIL` line names what is wrong, and the command (like `install`) exits 1. Rerunning
+`install` with the same options fixes anything it can. The check sees this machine only;
+whether GitHub shows the runner as **Idle** is on the org's runners page.
+
+### If jobs are not picked up
+
+- **Public repos:** new org runners join the **Default** runner group, which does not serve
+  public repositories until **Allow public repositories** is ticked in
+  *Settings > Actions > Runner groups > Default*.
+- **Labels:** every label in `runs-on:` must be on the runner.
+- **Service:** `bash ghrunner_setup.sh check`, then `status --name NAME` and the runner's
+  logs in `DIR/_diag`.
+
+## Disk cleanup and monitoring
+
+`ghrunner-cleanup.timer` runs hourly (as root, from the copy of the script in
+`/usr/local/sbin`) and covers every runner service on the machine:
+
+- Deletes runner logs (`_diag`) and job workspaces (`_work/*`) untouched for
+  `GHRUNNER_KEEP_DAYS` (7) days. A removed workspace is only cloned again on the next job.
+- Prunes Docker images no container uses, and build cache, older than the same age.
+  Containers and volumes are never touched, so other services on the machine keep their data.
+- When a disk the runners use is at `GHRUNNER_DISK_LIMIT` (80%) or more, clears every
+  idle workspace and every unused image regardless of age, then writes a warning to the
+  journal if the disk is still over the limit.
+- Leaves a runner's workspaces alone while it has a job running, and skips Docker while any
+  job is running.
+
+```sh
+sudo ghrunner_setup.sh report                     # disk, busy/idle and size per runner, docker df
+sudo ghrunner_setup.sh cleanup --dry-run          # what a run would remove
+journalctl -u ghrunner-cleanup                    # what past runs removed, and warnings
+systemctl list-timers ghrunner-cleanup.timer      # next run
+```
+
+To change the limits, put them in `/etc/default/ghrunner-cleanup`:
+
+```sh
+GHRUNNER_KEEP_DAYS=3
+GHRUNNER_DISK_LIMIT=70
+```
+
+## systemd service reference
+
+The rest of this page is GitHub's reference for the service, which the script automates.
+
 https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/configure-the-application?platform=linux
 
 You must add a runner to GitHub before you can configure the self-hosted runner application as a service. For more information, see Adding self-hosted runners.

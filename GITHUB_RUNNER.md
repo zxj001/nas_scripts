@@ -6,9 +6,17 @@ Runners for the **Nicu-Labs** GitHub org (`https://github.com/Nicu-Labs`, with t
 
 What `install` does:
 
-- Installs `curl`, the newest `libicu` apt has, and Docker Engine + Compose (Debian's
-  `docker.io`, or an existing `docker-ce`). Docker is required: jobs can use it
-  without sudo because the runner user joins the `docker` group.
+- Installs what a headless runner VM needs, without recommended packages so nothing else
+  (least of all a desktop) comes along:
+  - `git` (so `actions/checkout` makes a real clone), `jq`, `unzip`, `zip`, `xz-utils`,
+    `curl`, `ca-certificates`;
+  - `openssh-server`, enabled and running, so the VM can be reached over SSH;
+  - the newest `libicu` apt has (the runner needs it);
+  - Docker Engine, Compose and Buildx (Debian's `docker.io`, `docker-compose`,
+    `docker-buildx`, plus `apparmor`), or an existing `docker-ce`. Docker is required:
+    jobs can use it without sudo because the runner user joins the `docker` group.
+  Language toolchains (Node, Python, Go, Java) are not preinstalled: `actions/setup-node`
+  and the like download them per workflow.
 - Creates the `runner` account when run as root (the runner refuses to run as root).
 - Downloads the latest runner release and checks its SHA-256 against the release notes.
 - Registers the runner with the org and runs it as a systemd service
@@ -67,7 +75,7 @@ bash proxmox_gh_runner.sh destroy --name gh-runner-1                # unregister
 | `--cores` / `--memory` / `--disk` | 2 / 4096 MB / 40 GB | The disk is thin provisioned. |
 | `--labels` | - | Extra runner labels, e.g. `heavy` for big builds. |
 | `--storage` / `--bridge` | `local-lvm` / `vmbr0` | Where the disks go and which network the VM joins. |
-| `--ssh-keys` | `/root/.ssh/authorized_keys` | Public keys for the VM's `debian` user, for SSH when debugging. |
+| `--ssh-keys` | `/root/.ssh/authorized_keys` | Required: public keys for the VM's `debian` user, the only way to log in (SSH key, no password). |
 | `--template-id` | 9100 | The template VM, built on first `create` (or with `template`). |
 | `--rebuild` | - | With `template`: replace the template with one from the current Debian image. |
 | `--yes` | - | `destroy` without typing the name to confirm. |
@@ -75,8 +83,8 @@ bash proxmox_gh_runner.sh destroy --name gh-runner-1                # unregister
 - **The OS:** nothing is installed. Every VM is a full clone of template VM 9100, whose
   disk is Debian 13's official cloud image (`debian-13-genericcloud-amd64.qcow2` from
   cloud.debian.org, checked against its `SHA512SUMS`): Debian already installed, ready for
-  cloud-init. On first boot cloud-init sets the hostname, network and SSH keys and
-  installs the guest agent. The template is a snapshot of the image on the day it was
+  cloud-init: a headless server with the SSH server, no desktop. On first boot cloud-init
+  sets the hostname, network and SSH keys and installs the guest agent. The template is a snapshot of the image on the day it was
   built; `template --rebuild` refreshes it for later VMs. Existing VMs are unaffected, and
   runner setup updates packages in each VM anyway.
 - **Prerequisites** are set up as needed: `curl` on the host if missing, and the
@@ -97,8 +105,9 @@ bash proxmox_gh_runner.sh destroy --name gh-runner-1                # unregister
 - **Output:** the guest agent returns output when a command finishes, so the runner
   install is quiet for a few minutes, then prints everything at once.
 
-Other hypervisors, or a VM made by hand: install Debian (see
-[docs/01-debian-install.md](docs/01-debian-install.md)), give it a unique hostname
+Other hypervisors, or a VM made by hand: install Debian 13 (see
+[docs/01-debian-install.md](docs/01-debian-install.md)) **without a desktop**, ticking
+only *SSH server* and *standard system utilities*, give it a unique hostname
 (`sudo hostnamectl set-hostname gh-runner-3`), since it becomes the runner name and
 registration fails if the name is taken, then set up the runner as below.
 

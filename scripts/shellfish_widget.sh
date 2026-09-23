@@ -7,6 +7,7 @@
 #   scripts/shellfish_widget.sh                  # disk usage of /
 #   scripts/shellfish_widget.sh / /media/Drive1  # one entry per mount point
 #   scripts/shellfish_widget.sh --name NAS       # title instead of the hostname
+#   scripts/shellfish_widget.sh --target pve1    # a widget of its own (ShellFish Pro)
 #   scripts/shellfish_widget.sh --print          # show the arguments, send nothing
 #
 # setup-machine --only shellfish runs it from cron. Cron shells do not read
@@ -14,7 +15,7 @@
 set -euo pipefail
 
 usage() {
-    sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 # Busy share of all CPUs over one second, from two /proc/stat samples.
@@ -78,11 +79,16 @@ disk_percent() {
 }
 
 main() {
-    local print=0 mounts=() mount label temp name
+    local print=0 mounts=() mount label temp name target=""
     name=$(hostname -s 2>/dev/null || hostname)
     while [ $# -gt 0 ]; do
         case "$1" in
             --print) print=1 ;;
+            --target)
+                [ $# -ge 2 ] || { echo "--target needs a widget identifier" >&2; return 2; }
+                target=$2
+                shift
+                ;;
             --name)
                 [ $# -ge 2 ] || { echo "--name needs a title" >&2; return 2; }
                 name=$2
@@ -98,6 +104,8 @@ main() {
 
     # --text so a name like "100%" or "#1" is never read as progress or color.
     local args=(server.rack --text "$name")
+    # Pro: the widget configured with this identifier gets this machine's data.
+    if [ -n "$target" ]; then args=(--target "$target" "${args[@]}"); fi
     mapfile -t -O "${#args[@]}" args < <(metric cpu.fill "$(cpu_percent)" CPU 75 90)
     temp=$(cpu_temp)
     if [ -n "$temp" ]; then

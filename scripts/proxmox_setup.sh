@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# proxmox_setup - apt repositories, SSH keys, SSH hardening and Tailscale on a
-# Proxmox VE host,
+# proxmox_setup - apt repositories, SSH keys, SSH hardening, Tailscale and the
+# ShellFish widget on a Proxmox VE host,
 # the way docs/pve-host.md describes. The host-side analogue of setup.sh.
 #
 #   curl -fsSL https://raw.githubusercontent.com/zxj001/nas_scripts/main/scripts/proxmox_setup.sh | bash
@@ -24,19 +24,23 @@ SSHD_DROPIN="$P/etc/ssh/sshd_config.d/99-local.conf"
 SYSCTL_FILE="$P/etc/sysctl.d/99-tailscale.conf"
 APT_DIR="$P/etc/apt/sources.list.d"
 OS_RELEASE="$P/etc/os-release"
+SHELLFISHRC="$P/root/.shellfishrc"
+WIDGET_BIN="$P/usr/local/bin/shellfish_widget.sh"
+WIDGET_URL="https://raw.githubusercontent.com/zxj001/nas_scripts/main/scripts/shellfish_widget.sh"
 
 # Ordered step registry, same contract as setup.sh. Every name here needs
 # three functions, with "-" replaced by "_":
 #
-#   check_<name>    0 = done, 1 = todo, 2 = not applicable
+#   check_<name>    0 = done, 1 = todo, 2 = not applicable, 3 = manual setup
 #   do_<name>       make it so
 #   default_<name>  echo yes|no - the prompt default
 #
 # tests/test_setup.sh fails if a registered step is missing one.
 #
 # Nothing else belongs here: no upgrade, guest agent, sleep or dev tools on the
-# hypervisor. Proxmox manages its own packages.
-STEPS=(repos ssh-keys ssh-harden tailscale subnet-router)
+# hypervisor. Proxmox manages its own packages. shellfish only adds the small
+# packages its widget needs, one script in /usr/local/bin and a cron line.
+STEPS=(repos ssh-keys ssh-harden tailscale subnet-router shellfish)
 
 usage() {
     cat <<'EOF'
@@ -46,6 +50,9 @@ Usage: proxmox_setup.sh [--status] [--yes] [--only a,b] [--help]
   --yes        run every not-done step without prompting
   --only a,b   only these steps, comma separated
   --help       this text
+
+shellfish is manual until Shell Integration is installed from the ShellFish
+app while connected as root.
 
 PVE_OPERATOR_KEY="ssh-ed25519 AAAA..." supplies your public key to ssh-keys
 (needed with --yes). ssh-harden refuses until sshd has logged a root login
@@ -555,6 +562,62 @@ do_subnet_router() {
     log "approve $LAN_ROUTE in the Tailscale admin console: Machines -> $(hostname) -> Edit route settings"
 }
 
+# ShellFish widget (docs/08-shellfish-widgets.md): cron pushes this host's name,
+# CPU, CPU temperature, memory and disk usage to the iPhone. ShellFish writes
+# /root/.shellfishrc when Shell Integration is installed from the app while
+# connected as root; until then there is nothing here but guidance. Nothing is
+# cloned onto the hypervisor, so the widget script is downloaded to
+# /usr/local/bin; an existing copy there is kept (see the doc to update it).
+shellfish_tools() { have openssl && have xxd && have curl && have crontab; }
+check_shellfish() {
+    [ -e "$SHELLFISHRC" ] || return 3
+    shellfish_tools && [ -x "$WIDGET_BIN" ] || return 1
+    crontab -l 2>/dev/null | grep -qF "$WIDGET_BIN"
+}
+default_shellfish() { echo yes; }
+do_shellfish() {
+    local current tmp
+    if [ ! -e "$SHELLFISHRC" ]; then
+        log "in ShellFish on the iPhone, connected to this host as root: server settings -> Install Shell Integration, then rerun"
+        log "see docs/08-shellfish-widgets.md"
+        return 0
+    fi
+    if ! shellfish_tools; then
+        # The repos step fixes the enterprise repository that makes update fail.
+        apt-get update
+        apt-get install -y openssl xxd curl cron
+    fi
+    if [ ! -e "$WIDGET_BIN" ] && [ ! -L "$WIDGET_BIN" ]; then
+        tmp="$(mktemp)"
+        # A failed or truncated download is never installed.
+        if ! curl -fsSL "$WIDGET_URL" -o "$tmp" || ! bash -n "$tmp"; then
+            rm -f "$tmp"
+            echo "could not download $WIDGET_URL" >&2
+            return 1
+        fi
+        mkdir -p "$(dirname "$WIDGET_BIN")"
+        install -m 755 "$tmp" "$WIDGET_BIN"
+        rm -f "$tmp"
+    elif [ ! -x "$WIDGET_BIN" ]; then
+        echo "preserving existing non-executable $WIDGET_BIN; fix or remove it and rerun" >&2
+        return 1
+    fi
+    # Keep every existing entry; an unreadable crontab is not an empty one.
+    if ! current="$(crontab -l 2>&1)"; then
+        if [[ "$current" != "no crontab for "* ]]; then
+            echo "cannot read crontab, leaving it alone: $current" >&2
+            return 1
+        fi
+        current=""
+    fi
+    if ! grep -qF "$WIDGET_BIN" <<<"$current"; then
+        printf '%s%s\n' "${current:+$current$'\n'}" \
+            "$(printf '*/15 * * * * %q >/dev/null 2>&1' "$WIDGET_BIN")" | crontab -
+    fi
+    "$WIDGET_BIN"
+    log "widget sent; add a ShellFish widget on the iPhone Home Screen if you have not"
+}
+
 # --- runner -----------------------------------------------------------------
 
 parse_args() {
@@ -653,6 +716,7 @@ main() {
         case "$rc" in
             0) status="done" ;;
             2) status=n/a ;;
+            3) status=manual; todo+=("$step") ;;
             *)
                 status=todo
                 todo+=("$step")

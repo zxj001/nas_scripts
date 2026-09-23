@@ -1,4 +1,4 @@
-# Proxmox host: repositories, SSH and Tailscale
+# Proxmox host: repositories, SSH, Tailscale and the ShellFish widget
 
 Automated by `scripts/proxmox_setup.sh`. **Before you run it**, have your own public key
 ready (`cat ~/.ssh/id_ed25519.pub` on your client). `ssh-harden` refuses to turn passwords off until
@@ -10,7 +10,8 @@ curl -fsSL https://raw.githubusercontent.com/zxj001/nas_scripts/main/scripts/pro
 ```
 
 It offers `repos` (see [Package repositories](#package-repositories)), `ssh-keys` (paste
-your key), `ssh-harden`, `tailscale` and `subnet-router`, with the same `--status`, `--yes`
+your key), `ssh-harden`, `tailscale`, `subnet-router` and `shellfish` (see
+[ShellFish widget](#shellfish-widget)), with the same `--status`, `--yes`
 and `--only a,b` flags as `setup-machine`. After `ssh-keys`, log
 in with the key from a new terminal when `ssh-harden` asks. Rerun the line to update. It
 refuses to run anywhere but a Proxmox VE host.
@@ -237,6 +238,36 @@ For the Supermicro BMC's CPU, system, PCH and DIMM readings, or a no-install ker
 readout, see [Temperatures](../README.md#temperatures). The BMC path also reports
 alarm thresholds. Check readings again after reboot if you added a module file.
 
+## ShellFish widget
+
+The iPhone widget from [08-shellfish-widgets.md](08-shellfish-widgets.md) also works on
+the host. It shows `pve1` with a real CPU temperature, which a VM can't read.
+
+1. In ShellFish, connect to the host **as root**, then choose **Install Shell Integration**
+   in the server's settings. That writes `/root/.shellfishrc`.
+2. Run the step (it shows `manual` until step 1 is done):
+
+   ```
+   curl -fsSL https://raw.githubusercontent.com/zxj001/nas_scripts/main/scripts/proxmox_setup.sh |
+     bash -s -- --only shellfish
+   ```
+
+   It installs `openssl`, `xxd`, `curl` and `cron` if any are missing, downloads the widget
+   script to `/usr/local/bin/shellfish_widget.sh`, adds a 15-minute entry to root's
+   crontab (keeping the existing entries) and sends the first update. Run `repos` first if
+   `apt-get update` fails on the enterprise repository.
+
+Temp needs a loaded CPU sensor driver; see [Temperatures](#temperatures) if it is missing
+from the widget.
+
+Nothing is cloned onto the host, so an existing `/usr/local/bin/shellfish_widget.sh` is
+kept. To update it:
+
+```
+curl -fsSL https://raw.githubusercontent.com/zxj001/nas_scripts/main/scripts/shellfish_widget.sh \
+  -o /usr/local/bin/shellfish_widget.sh && chmod 755 /usr/local/bin/shellfish_widget.sh
+```
+
 ## Done checklist
 
 - [ ] Fresh key login works:
@@ -248,6 +279,7 @@ alarm thresholds. Check readings again after reboot if you added a module file.
 - [ ] `tailscale status` lists `pve1`
 - [ ] From the iPhone on cellular: `https://TAILSCALE_IP:8006` opens, and a new SSH session
   to `root@TAILSCALE_IP` logs in with the key
+- [ ] ShellFish widget only: `shellfish_widget.sh --print` shows `pve1` and a Temp value
 - [ ] Subnet router only: once the route is approved, `https://192.168.1.118` (IPMI) opens
   from the iPhone on cellular
 

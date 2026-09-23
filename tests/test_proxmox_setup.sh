@@ -946,8 +946,18 @@ run --yes --only shellfish >/dev/null
 
 # 4. An unreadable crontab is never overwritten.
 rm -f "$F/crontab" "$F/calls"
-crontab_unreadable='crontab() { case "$1" in -l) echo "crontab: permission denied" >&2; return 1 ;; *) touch "$F/overwritten" ;; esac; }'
-sed "s|^main \"\$@\"$|$crontab_unreadable\nmain \"\$@\"|" "$HARNESS" >"$F/harness-unreadable.sh"
+{
+    grep -v '^main "\$@"$' "$HARNESS"
+    cat <<'UNREADABLE'
+crontab() {
+    case "$1" in
+        -l) echo "crontab: permission denied" >&2; return 1 ;;
+        *) touch "$F/overwritten" ;;
+    esac
+}
+main "$@"
+UNREADABLE
+} >"$F/harness-unreadable.sh"
 if bash "$F/harness-unreadable.sh" --yes --only shellfish >/dev/null 2>&1; then fail "unreadable crontab accepted"; fi
 [ ! -e "$F/overwritten" ] || fail "unreadable crontab overwritten"
 

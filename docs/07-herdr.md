@@ -34,6 +34,8 @@ In a pane, run `claude`, `codex` or `pi`.
 From the iPhone: SSH in over [Tailscale](04-tailscale.md), run `herdr`, and detach before
 closing ShellFish.
 
+Next: [08-shellfish-widgets.md](08-shellfish-widgets.md)
+
 ## References
 
 - https://herdr.dev/docs/

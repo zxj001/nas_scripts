@@ -55,11 +55,21 @@ Not a package: the repo itself is what you run. Clone it and start a harness ins
 then picks up the repo's `AGENTS.md`. Needs `gh` logged in.
 
 ```
-cd ~/tools
+cd ~
 git clone https://github.com/kunchenguid/firstmate
 cd firstmate
 claude                           # or pi, codex
 ```
+
+Setup defaults to `~/firstmate`. To choose another checkout location, use:
+
+```
+setup-machine --only firstmate --firstmate-dir "$HOME/projects/firstmate"
+```
+
+Use the same `--firstmate-dir` on later runs, including `--status`. For an existing
+checkout at the old location, pass `--firstmate-dir "$HOME/tools/firstmate"`;
+setup does not move it. Add `--yes` to install without prompting.
 
 FirstMate's Herdr backend is experimental; use it only if you want the Herdr path.
 

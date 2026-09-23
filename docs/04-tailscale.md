@@ -30,6 +30,8 @@ Test on cellular, not home Wi-Fi: `ssh YOURUSERNAME@TAILSCALE_IP`. If that conne
 access works.
 
 For agent sessions that survive the phone disconnecting, see [07-herdr.md](07-herdr.md).
+For a Home Screen widget with CPU, temperature, memory and disk usage, see
+[08-shellfish-widgets.md](08-shellfish-widgets.md).
 
 Next: [05-dev-tools.md](05-dev-tools.md)
 

@@ -25,6 +25,10 @@ setup-machine            # offer each step that is not done yet
 setup-machine --status   # just show what is done and what is left
 ```
 
+`--only a,b` runs just those steps. Any prerequisite that is not done yet (for example
+`node` for `pi`, or `ssh` and `dev-tools` for `shellfish`) is named and added, and you
+are asked about it like any other step. `--status --only a,b` lists them without asking.
+
 On a minimal Debian install, install the download prerequisite first:
 
 ```

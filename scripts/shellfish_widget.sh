@@ -97,6 +97,9 @@ main() {
             return 1
         fi
     done
+    # ShellFish's file reads unset variables ($TMUX, $SSH_TTY...) and is not
+    # written for errexit, so load and run it with both off.
+    set +eu
     # shellcheck source=/dev/null
     . "$HOME/.shellfishrc"
     widget "${args[@]}"

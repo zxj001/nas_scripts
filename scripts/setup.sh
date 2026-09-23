@@ -34,7 +34,8 @@ Usage: setup-machine [--status] [--yes] [--only a,b] [--firstmate-dir PATH] [--h
 
   --status     run the checks, print the table and exit
   --yes        run every not-done step without prompting
-  --only a,b   only these steps, comma separated
+  --only a,b   only these steps, comma separated, plus any of their
+               prerequisites that are not done yet (each still asks)
   --firstmate-dir PATH
                FirstMate checkout location (default: ~/firstmate)
   --help       this text
@@ -746,6 +747,65 @@ parse_args() {
     done
 }
 
+# Steps that must be done before a step works. STEPS is already in dependency
+# order, so every name here comes earlier in STEPS (tests check that).
+step_deps() {
+    local deps=""
+    case "$1" in
+        ssh-harden) deps="ssh ssh-keys" ;;
+        pi) deps="node" ;;
+        firstmate) deps="dev-tools gh" ;;
+        # Shell Integration arrives over SSH; cron runs the script from the
+        # repo checkout, which needs git.
+        shellfish) deps="ssh dev-tools" ;;
+    esac
+    case "$OS:$1" in
+        debian:upgrade|debian:guest-agent|debian:no-sleep|debian:power-restore|debian:ssh|\
+        debian:ssh-harden|debian:tailscale|debian:dev-tools|debian:gh|debian:shellfish|debian:gpu)
+            deps="sudo $deps" ;;
+        macos:tailscale|macos:dev-tools|macos:gh|macos:codex|macos:claude)
+            deps="brew $deps" ;;
+    esac
+    echo $deps
+}
+
+selected() {
+    local step
+    for step in "${SELECTED[@]}"; do
+        if [ "$step" = "$1" ]; then return 0; fi
+    done
+    return 1
+}
+
+# With --only, add every prerequisite (and theirs) that is not done yet, so
+# it shows in the table and is offered like any other step. Done and n/a
+# prerequisites are left out. Notes go to stderr to keep the table two columns.
+add_deps() {
+    local step dep rc changed=1 wanted
+    [ -n "$OPT_ONLY" ] || return 0
+    while [ "$changed" = 1 ]; do
+        changed=0
+        for step in "${SELECTED[@]}"; do
+            for dep in $(step_deps "$step"); do
+                if selected "$dep"; then continue; fi
+                rc=0
+                "$(fname check "$dep")" 2>/dev/null || rc=$?
+                if [ "$rc" = 0 ] || [ "$rc" = 2 ]; then continue; fi
+                echo "$step needs $dep, which is not done yet - added" >&2
+                SELECTED+=("$dep")
+                changed=1
+            done
+        done
+    done
+    wanted=("${SELECTED[@]}")
+    SELECTED=()
+    for step in "${STEPS[@]}"; do
+        case " ${wanted[*]} " in
+            *" $step "*) SELECTED+=("$step") ;;
+        esac
+    done
+}
+
 # Fill SELECTED from STEPS, honouring --only and its ordering.
 select_steps() {
     local want step found
@@ -816,6 +876,7 @@ main() {
     select_steps
     if [ "$OPT_STATUS" != 1 ]; then self_update "$@"; fi
     tool_path
+    add_deps
 
     local step rc status ran=""
     local todo=()

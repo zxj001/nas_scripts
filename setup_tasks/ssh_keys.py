@@ -44,7 +44,22 @@ def valid_operator(ctx):
 def operator_login_seen(ctx):
     auth, recorded = paths(ctx)
     known = set(recorded.read_text().splitlines()) if recorded.exists() else set()
-    journal = ctx.run("journalctl", "-u", "ssh.service", "--no-pager", "-o", "cat").stdout
+    # Filtered at the source: a busy cluster's journal is large, oldest first,
+    # and full of addresses and user names that must not be echoed or logged.
+    journal = ctx.run(
+        "journalctl",
+        "-u",
+        "ssh.service",
+        "--no-pager",
+        "-o",
+        "cat",
+        "--grep",
+        "Accepted publickey for root ",
+        allowed=(0, 1),
+        timeout=120,
+        quiet=True,
+        split=True,
+    ).stdout
     return any(
         "Accepted publickey for root " in line
         and any(fp in line for fp in known & fingerprints(ctx, auth))
@@ -64,6 +79,11 @@ def apply(ctx, task):
             "no operator public key supplied",
             "Pass --ssh-key or PVE_OPERATOR_KEY; never supply a private key",
         )
+    # ssh-keygen -l also fingerprints a private key and skips junk lines, and
+    # every line here would be appended to authorized_keys.
+    lines = [line for line in key.splitlines() if line.strip() and not line.startswith("#")]
+    if len(lines) != 1 or "PRIVATE KEY" in key:
+        return ctx.result("failed", "not a single valid SSH public key")
     fps = key_fingerprints(ctx, key)
     if len(fps) != 1:
         return ctx.result("failed", "not a single valid SSH public key")

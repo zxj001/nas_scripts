@@ -47,7 +47,8 @@ def private_directory(path):
 @contextmanager
 def apply_lock(path=Path("/tmp/nas-setup-apply.lock")):
     # A non-writable common lock permits different users to take the same flock.
-    # O_NOFOLLOW and ownership/type validation prevent a redirected lock file.
+    # It may belong to whichever user ran setup first, so its owner is not
+    # checked; O_NOFOLLOW and the type/link-count check prevent a redirected lock.
     try:
         fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_RDONLY | os.O_NOFOLLOW, 0o444)
     except FileExistsError:
@@ -55,7 +56,8 @@ def apply_lock(path=Path("/tmp/nas-setup-apply.lock")):
     try:
         import stat
 
-        if not stat.S_ISREG(os.fstat(fd).st_mode) or os.fstat(fd).st_nlink != 1:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
             raise ValueError("unsafe setup lock file")
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -80,12 +82,21 @@ class Journal:
             old_path = self.directory / f"{resume}.json"
             if old_path.is_symlink():
                 raise ValueError("unsafe resume journal")
-            old = json.loads(old_path.read_text())
-            if old["identity"] != identity or old["version"] != VERSION or old["inputs"] != digest:
+            try:
+                old = json.loads(old_path.read_text())
+                changed = (
+                    old["identity"] != identity
+                    or old["version"] != VERSION
+                    or old["inputs"] != digest
+                )
+                reselected = old["selected"] != selected
+            except (OSError, ValueError, KeyError, TypeError) as error:
+                raise ValueError(f"unreadable resume journal: {old_path}") from error
+            if changed:
                 raise ValueError(
                     "resume identity/version/inputs changed; start a fresh run to re-plan"
                 )
-            if old["selected"] != selected:
+            if reselected:
                 raise ValueError(
                     "resume selection changed; repeat the original --only/--with-deps selection"
                 )

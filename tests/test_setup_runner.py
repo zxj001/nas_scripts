@@ -406,3 +406,51 @@ def test_noninteractive_only_names_prerequisites_and_stays_literal():
         "pi needs node, which is not available; node provides it",
         "Add --with-deps to include them",
     ]
+
+
+@pytest.mark.parametrize("content", ["[]", "{}", '{"identity": 1}', "not json"])
+def test_malformed_resume_journal_is_a_controller_error(tmp_path, content):
+    directory = tmp_path / "state"
+    directory.mkdir(mode=0o700)
+    run_id = "a" * 32
+    (directory / f"{run_id}.json").write_text(content)
+    with pytest.raises(ValueError, match="unreadable resume journal"):
+        Journal(directory, "debian", "fixture", tmp_path, ["directories"], {}, run_id)
+
+
+def cli(*args):
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    return subprocess.run(
+        [sys.executable, "-I", "-c",
+         "import sys; sys.path.insert(0, sys.argv.pop(1)); from setup_core.cli import main; "
+         "raise SystemExit(main())", str(root), *args],
+        capture_output=True, text=True, check=False,
+    )
+
+
+def test_plan_json_is_json():
+    completed = cli("--profile", "debian", "--plan", "--only", "pi", "--with-deps", "--json")
+    assert completed.returncode == 0
+    plan = json.loads(completed.stdout)
+    assert plan["profile"] == "debian"
+    assert [t["id"] for t in plan["tasks"]][-1] == "pi"
+    assert {"id", "needs", "provides"} <= plan["tasks"][0].keys()
+
+
+def test_empty_firstmate_dir_is_rejected():
+    from setup_core.cli import parser
+
+    assert parser().parse_args(["--firstmate-dir", ""]).firstmate_dir == ""
+    import platform
+
+    if platform.system() != "Linux":
+        pytest.skip("status needs a supported host profile")
+    completed = cli("--status", "--only", "firstmate", "--firstmate-dir", "")
+    if "supports Debian 13" in completed.stderr:
+        pytest.skip("not a Debian 13 host")
+    assert completed.returncode == 2
+    assert "--firstmate-dir needs a checkout path" in completed.stderr

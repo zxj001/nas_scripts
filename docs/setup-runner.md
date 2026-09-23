@@ -28,7 +28,13 @@ allows reviewing another platform's plan; apply/status require a matching host.
 
 `--status` only probes: no runtime installation, sudo prompt, journal, downloads,
 package updates, checkout changes, or writes to configuration. Missing prerequisites
-remain pending. `--help` and `--plan` likewise never bootstrap dependencies.
+remain pending. `--help` and `--plan` likewise never bootstrap dependencies. Outside a
+checkout (`curl … | bash`), the wrapper fetches the pinned, checksummed release bundle
+into a temporary directory for these too; that installs nothing.
+
+`--yes` answers the task prompts only. From a terminal, setup still asks for the sudo
+password once when a selected task needs it; without a terminal, privileged tasks
+need cached or passwordless sudo and are otherwise blocked.
 
 ## Results and resume
 

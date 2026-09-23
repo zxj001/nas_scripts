@@ -1,5 +1,7 @@
 """Validate effective SSH policy, preserving operator config and access."""
 
+import os
+
 from setup_core.capabilities import available
 from setup_core.files import Change, ManualConfig, recovery_path
 from setup_tasks.ssh_keys import operator_login_seen, valid_operator
@@ -60,7 +62,8 @@ def apply(ctx, task):
                 "no successful operator root-key login found in ssh.service journal",
                 "SSH in as root with that key from another terminal, then resume",
             )
-    elif ctx.user == "root":
+    elif ctx.user == "root" or os.geteuid() == 0:
+        # $USER survives su without -, so the effective uid decides.
         return ctx.result("manual", "Debian hardening requires a non-root operator account")
     config = ctx.path("/etc/ssh/sshd_config.d/99-local.conf")
     content = "".join(f"{key} {value}\n" for key, value in desired(ctx).items())

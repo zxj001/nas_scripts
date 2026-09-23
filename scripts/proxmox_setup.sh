@@ -45,32 +45,41 @@ setup_main() {
         done
         "$py" -I -c 'import sys; raise SystemExit(sys.version_info < (3, 11))'
     fi
+    # Piped into bash, BASH_SOURCE is "main", not a path: a file of that name in
+    # the current directory must never select local code over the release.
     source_path="${BASH_SOURCE[0]:-}"
-    if [ -n "$source_path" ] && [ -f "$source_path" ]; then
+    if [ -n "$source_path" ] && [ "$source_path" = "$0" ] && [ -f "$source_path" ]; then
         root="$("$py" -I -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).resolve().parent.parent)' "$source_path")"
     fi
     if [ -n "$root" ] && [ -f "$root/setup_core/__main__.py" ]; then
         "$py" -I -c 'import sys; sys.path.insert(0,sys.argv.pop(1)); from setup_core.cli import main; raise SystemExit(main())' "$root" --profile "$profile" "$@"
         return
     fi
-    if [ "$readonly" = 1 ]; then
-        echo 'No local setup bundle. Use a checkout or install a complete release before inspection.' >&2; return 2
-    fi
     local temporary url rc=0
     temporary="$(mktemp -d)"
-    trap 'rm -rf "$temporary"' EXIT
+    # Expanded now: the trap can run after this function's locals are gone.
+    # shellcheck disable=SC2064
+    trap "rm -rf $(printf %q "$temporary")" EXIT
     url='https://github.com/zxj001/nas_scripts/releases/download/setup-v1.0.0'
     # Fetch complete, version-matched assets; never stream installers into a shell.
-    "$py" -I -c 'import pathlib,sys,urllib.request
+    # Read-only runs fetch it too: a verified bundle in a temporary directory
+    # installs nothing. A failed fetch or checksum is a bootstrap error (2).
+    if ! "$py" -I -c 'import pathlib,sys,urllib.request
 base,directory=sys.argv[1:]
 for name in ("setup.pyz", "setup.pyz.sha256"):
-    with urllib.request.urlopen(base+"/"+name, timeout=120) as response:
-        pathlib.Path(directory,name).write_bytes(response.read())
-' "$url" "$temporary"
-    "$py" -I -c 'import hashlib,pathlib,sys
+    try:
+        with urllib.request.urlopen(base+"/"+name, timeout=120) as response:
+            pathlib.Path(directory,name).write_bytes(response.read())
+    except OSError as error: raise SystemExit(name + ": " + str(error))
+' "$url" "$temporary" || ! "$py" -I -c 'import hashlib,pathlib,sys
 p=pathlib.Path(sys.argv[1]); expected=(p/"setup.pyz.sha256").read_text().split()[0]
 if hashlib.sha256((p/"setup.pyz").read_bytes()).hexdigest()!=expected: raise SystemExit("setup checksum mismatch")
-' "$temporary"
+' "$temporary"; then
+        echo "could not fetch a verified setup-v1.0.0 bundle from $url" >&2
+        rm -rf "$temporary"
+        trap - EXIT
+        return 2
+    fi
     "$py" -I "$temporary/setup.pyz" --profile "$profile" "$@" || rc=$?
     rm -rf "$temporary"
     trap - EXIT

@@ -28,7 +28,18 @@ class Context:
     def have(self, name):
         return shutil.which(name, path=self.env["PATH"]) is not None
 
-    def run(self, *args, privileged=False, allowed=(0,), interactive=False, timeout=None):
+    def run(
+        self,
+        *args,
+        privileged=False,
+        allowed=(0,),
+        interactive=False,
+        timeout=None,
+        quiet=False,
+        split=False,
+    ):
+        """quiet: never echo (file contents, journals, internal JSON).
+        split: stdout only, stderr kept apart in .stderr."""
         if privileged and os.geteuid() != 0:
             args = ("sudo", "-n", *args)
         return execute(
@@ -37,12 +48,13 @@ class Context:
             allowed=allowed,
             interactive=interactive,
             timeout=timeout if timeout is not None else (30 if self.phase != "apply" else None),
-            emit=self.phase == "apply",
+            emit=self.phase == "apply" and not quiet,
+            split=split,
         )
 
     def read(self, path, *, privileged=False):
         if privileged:
-            return self.run("cat", path, privileged=True).stdout
+            return self.run("cat", path, privileged=True, quiet=True, split=True).stdout
         return Path(path).read_text()
 
     def result(self, outcome, reason="", action="", unsafe=()):

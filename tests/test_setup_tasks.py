@@ -54,10 +54,13 @@ class Fixture(Context):
             raise value
         if callable(value):
             return value()
-        rc, text = value
+        # (rc, output) or (rc, stdout, stderr); stderr stays apart only with split.
+        rc, text, errors = (*value, "") if len(value) == 2 else value
         if rc not in kwargs.get("allowed", (0,)):
             raise CommandError(f"{args[0]} failed")
-        return Output(rc, text)
+        if kwargs.get("split"):
+            return Output(rc, text, errors)
+        return Output(rc, errors + text)
 
 
 def test_config_conflict_preserved_and_identical_write_is_noop(tmp_path):
@@ -415,7 +418,9 @@ def test_repos_task_maps_the_adapter_exit_code(tmp_path, monkeypatch):
     assert repos.probe(ctx, Task("repos", "")).outcome == "satisfied"
 
 
-def shellfish_fixture(tmp_path, *, tools=True, crontab=(1, "no crontab for fixture"), profile="debian"):
+def shellfish_fixture(
+    tmp_path, *, tools=True, crontab=(1, "", "no crontab for fixture"), profile="debian"
+):
     outputs = {("have", t): tools for t in shellfish.TOOLS}
     outputs[("crontab", "-l")] = crontab
     ctx = Fixture(tmp_path, profile=profile, phase="apply", outputs=outputs)
@@ -471,6 +476,28 @@ def test_shellfish_installs_keeps_crontab_migrates_old_line_and_repeats(tmp_path
     assert sum(1 for args, _ in ctx.calls if args == (str(path),)) == 1
 
 
+def test_shellfish_keeps_arguments_of_a_customized_old_line(tmp_path):
+    old = "*/15 * * * * /home/u/nas_scripts/scripts/shellfish_widget.sh / /media/Drive1 >/dev/null 2>&1"
+    ctx, written = shellfish_fixture(tmp_path, crontab=(0, old + "\n"))
+    (ctx.home / ".shellfishrc").write_text("")
+    assert shellfish.apply(ctx, Task("shellfish", "")).outcome == "changed"
+    path = shellfish.target(ctx)
+    assert written[-1].splitlines() == [
+        f"*/15 * * * * {path} / /media/Drive1 >/dev/null 2>&1"
+    ]
+
+
+def test_shellfish_crontab_stderr_is_not_written_back(tmp_path):
+    ctx, written = shellfish_fixture(
+        tmp_path, crontab=(0, "0 3 * * * backup\n", "crontab: some warning\n")
+    )
+    (ctx.home / ".shellfishrc").write_text("")
+    assert shellfish.apply(ctx, Task("shellfish", "")).outcome == "changed"
+    assert "warning" not in written[-1]
+    read = [kwargs for args, kwargs in ctx.calls if args == ("crontab", "-l")]
+    assert read and all(k.get("quiet") and k.get("split") for k in read)
+
+
 def test_shellfish_proxmox_installs_to_usr_local_bin(tmp_path):
     ctx, written = shellfish_fixture(tmp_path, profile="proxmox")
     (ctx.home / ".shellfishrc").write_text("")
@@ -491,7 +518,7 @@ def test_shellfish_installs_missing_tools_with_apt(tmp_path):
 
 
 def test_shellfish_unreadable_crontab_is_never_overwritten(tmp_path):
-    ctx, written = shellfish_fixture(tmp_path, crontab=(1, "crontab: permission denied"))
+    ctx, written = shellfish_fixture(tmp_path, crontab=(1, "", "crontab: permission denied"))
     (ctx.home / ".shellfishrc").write_text("")
     with pytest.raises(RuntimeError, match="cannot read crontab"):
         shellfish.apply(ctx, Task("shellfish", ""))
@@ -564,3 +591,145 @@ def test_shellfish_widget_print_layout_and_colors(tmp_path):
         capture_output=True,
     )
     assert levels.returncode == 0, levels.stderr
+
+
+def test_execute_split_keeps_stderr_out_of_stdout():
+    from setup_core.commands import execute
+
+    script = "import sys; print('data'); print('warning', file=sys.stderr)"
+    env = {"PATH": os.environ["PATH"]}
+    split = execute([sys.executable, "-c", script], env=env, split=True)
+    assert split.stdout == "data\n" and split.stderr == "warning\n"
+    merged = execute([sys.executable, "-c", script], env=env, timeout=30)
+    assert "warning" in merged.stdout
+
+
+def test_append_once_keeps_an_existing_files_mode(tmp_path):
+    profile = tmp_path / ".bashrc"
+    profile.write_text("# mine\n")
+    profile.chmod(0o644)
+    append_once(profile, "export X=1")
+    assert profile.stat().st_mode & 0o777 == 0o644
+    created = tmp_path / "new"
+    append_once(created, "x")
+    assert created.stat().st_mode & 0o777 == 0o600
+
+
+def test_repos_active_subscription_counts_as_configured(tmp_path, monkeypatch):
+    monkeypatch.setattr(repos, "adapter", lambda ctx, op, allowed=(0,): Output(1, ""))
+    ctx = Fixture(
+        tmp_path,
+        profile="proxmox",
+        outputs={
+            ("have", "pvesubscription"): True,
+            ("pvesubscription", "get"): (0, "key: pve1c-x\nstatus: active\n"),
+        },
+    )
+    assert repos.probe(ctx, Task("repos", "")).outcome == "satisfied"
+    assert repos.usable(ctx)
+    ctx.outputs[("pvesubscription", "get")] = (0, "status: notfound\n")
+    assert repos.probe(ctx, Task("repos", "")).outcome == "pending"
+    assert not repos.usable(ctx)
+
+
+def test_gpu_driver_not_loaded_is_pending_not_a_failure(tmp_path):
+    from setup_tasks import gpu
+
+    ctx = Fixture(
+        tmp_path,
+        outputs={
+            ("have", "lspci"): True,
+            ("have", "nvidia-smi"): True,
+            ("lspci", "-nn"): (0, "01:00.0 VGA compatible controller [0300]: NVIDIA Corp\n"),
+            ("nvidia-smi",): (9, "NVIDIA-SMI has failed because it couldn't communicate"),
+        },
+    )
+    assert gpu.probe(ctx, Task("gpu", "")).outcome == "pending"
+    ctx.outputs[("nvidia-smi",)] = (0, "")
+    assert gpu.probe(ctx, Task("gpu", "")).outcome == "satisfied"
+
+
+def test_gpu_without_lspci_is_not_applicable(tmp_path):
+    from setup_tasks import gpu
+
+    assert gpu.probe(Fixture(tmp_path), Task("gpu", "")).outcome == "not-applicable"
+
+
+@pytest.mark.parametrize("kind", ["private", "two-lines"])
+def test_operator_key_must_be_one_public_key(tmp_path, kind):
+    from setup_tasks import ssh_keys
+
+    key = tmp_path / "id"
+    subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(key)], check=True)
+    ctx = Fixture(tmp_path, phase="apply")
+    public = key.with_suffix(".pub").read_text().strip()
+    ctx.inputs["ssh_key"] = key.read_text() if kind == "private" else public + "\nextra junk"
+    ctx.run = lambda *a, **k: pytest.fail("the key reached ssh-keygen")
+    assert ssh_keys.apply(ctx, Task("ssh-keys", "")).outcome == "failed"
+    assert not (ctx.home / ".ssh/authorized_keys").exists()
+
+
+def test_operator_login_seen_needs_the_operators_key_in_the_journal(tmp_path):
+    from setup_tasks import ssh_keys
+
+    auth, recorded = ssh_keys.paths(ctx := Fixture(tmp_path, profile="proxmox", phase="apply"))
+    auth.parent.mkdir()
+    auth.write_text("keys\n")
+    recorded.write_text("SHA256:operator\n")
+    listing = "256 SHA256:operator op (ED25519)\n256 SHA256:node root@pve1 (ED25519)\n"
+    ctx.outputs[("ssh-keygen", "-l", "-f", str(auth))] = (0, listing)
+    grep = ("journalctl", "-u", "ssh.service", "--no-pager", "-o", "cat",
+            "--grep", "Accepted publickey for root ")
+    ctx.outputs[grep] = (0, "Accepted publickey for root from 10.0.0.2 port 1 ssh2: ED25519 SHA256:node\n")
+    assert not ssh_keys.operator_login_seen(ctx)
+    ctx.outputs[grep] = (1, "", "-- No entries --")
+    assert not ssh_keys.operator_login_seen(ctx)
+    ctx.outputs[grep] = (0, "Accepted publickey for root from 10.0.0.3 port 2 ssh2: ED25519 SHA256:operator\n")
+    assert ssh_keys.operator_login_seen(ctx)
+    kwargs = [k for args, k in ctx.calls if args == grep][-1]
+    assert kwargs["quiet"] and kwargs["split"] and kwargs["timeout"]
+
+
+def test_ssh_harden_refuses_without_an_operator_key(tmp_path):
+    ctx = Fixture(tmp_path, phase="apply")
+    result = ssh.apply(ctx, Task("ssh-harden", ""))
+    assert result.outcome == "blocked"
+    assert not ctx.path("/etc/ssh/sshd_config.d/99-local.conf").exists()
+    assert ctx.calls == []
+
+
+@pytest.mark.parametrize("failure", ["overridden", "reload"])
+def test_ssh_rolls_back_when_overridden_or_reload_fails(tmp_path, monkeypatch, failure):
+    reloads = []
+
+    def reload():
+        reloads.append(1)
+        if failure == "reload" and len(reloads) == 1:
+            raise CommandError("reload failed")
+        return Output(0, "")
+
+    ctx = Fixture(
+        tmp_path,
+        outputs={("/usr/sbin/sshd", "-t"): (0, ""), ("systemctl", "reload", "ssh"): reload},
+        phase="apply",
+    )
+    monkeypatch.setattr(ssh, "valid_operator", lambda _: True)
+    monkeypatch.setattr(ssh, "policy_ok", lambda _: failure != "overridden")
+    result = ssh.apply(ctx, Task("ssh-harden", ""))
+    assert result.outcome == "failed" and "restored" in result.reason
+    assert not ctx.path("/etc/ssh/sshd_config.d/99-local.conf").exists()
+    assert reloads  # sshd reloaded with the restored configuration
+
+
+def test_mac_tailscale_uses_the_app_cli_without_sudo(tmp_path):
+    ctx = Fixture(tmp_path, profile="macos", phase="apply")
+    app = ctx.path(tailscale.MAC_APP_CLI)
+    app.parent.mkdir(parents=True)
+    app.write_text("")
+    ctx.outputs[(str(app), "status")] = (0, "100.1.2.3 mac")
+    task = Task("tailscale.login", "")
+    assert tailscale.probe(ctx, task).outcome == "satisfied"
+    ctx.outputs[(str(app), "status")] = (1, "Logged out.")
+    assert tailscale.probe(ctx, task).outcome == "manual"
+    assert tailscale.apply(ctx, task).outcome == "manual"
+    assert not any("up" in args for args, _ in ctx.calls)

@@ -22,12 +22,16 @@ def redact(text):
 class Output:
     returncode: int
     stdout: str
+    stderr: str = ""
 
 
-def execute(args, *, env, allowed=(0,), interactive=False, timeout=None, emit=False):
+def execute(args, *, env, allowed=(0,), interactive=False, timeout=None, emit=False, split=False):
     args = [str(x) for x in args]
     # Worker shares the foreground terminal for intentional authentication. It
     # does not put sign-in URLs, tokens, or key input in the structured journal.
+    # split keeps stderr out of output that callers parse or write back (a
+    # sudo or crontab warning is not configuration, JSON or a file's content).
+    errors = ""
     if interactive:
         with open("/dev/tty", "r+") as terminal:
             rc = subprocess.call(args, env=env, stdin=terminal, stdout=terminal, stderr=terminal)
@@ -38,15 +42,16 @@ def execute(args, *, env, allowed=(0,), interactive=False, timeout=None, emit=Fa
             env=env,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
+            stderr=subprocess.PIPE if split else subprocess.STDOUT,
             text=True,
             errors="replace",
         )
         try:
             # Bounded probe/download calls use communicate; installer calls can
             # stream without collecting an unbounded amount of output in memory.
-            if timeout is not None:
-                output, _ = process.communicate(timeout=timeout)
+            if timeout is not None or split:
+                output, errors = process.communicate(timeout=timeout)
+                errors = errors or ""
                 if emit:
                     print(redact(output), end="", flush=True)
             else:
@@ -90,6 +95,6 @@ def execute(args, *, env, allowed=(0,), interactive=False, timeout=None, emit=Fa
     if rc not in allowed:
         # Never put command arguments (which can include secrets) in diagnostics.
         raise CommandError(
-            f"{os.path.basename(args[0])} exited {rc}: {redact(output[-1500:]).strip()}"
+            f"{os.path.basename(args[0])} exited {rc}: {redact((output + errors)[-1500:]).strip()}"
         )
-    return Output(rc, output)
+    return Output(rc, output, errors)

@@ -1,10 +1,10 @@
 """Public CLI shared by the machine and Proxmox entrypoints."""
 
 import argparse
-import getpass
 import json
 import os
 import platform
+import pwd
 import re
 import subprocess
 import sys
@@ -81,9 +81,7 @@ def parser():
     )
     cli.add_argument("--ssh-key", help="one public key; may also be supplied in PVE_OPERATOR_KEY")
     cli.add_argument("--lan-route", default="192.168.1.0/24")
-    cli.add_argument(
-        "--firstmate-dir", type=Path, help="FirstMate checkout location (default: ~/firstmate)"
-    )
+    cli.add_argument("--firstmate-dir", help="FirstMate checkout location (default: ~/firstmate)")
     return cli
 
 
@@ -135,26 +133,37 @@ def main():
         tasks, aliases = registry(profile)
         selected = select(tasks, aliases, args.only, args.with_deps)
         if args.plan:
+            if args.json:
+                plan = [
+                    {"id": t.id, "needs": list(t.needs), "provides": list(t.provides)}
+                    for t in selected
+                ]
+                print(json.dumps({"profile": profile, "tasks": plan}, indent=2))
+                return 0
             for task in selected:
                 print(f"{task.id:22} needs: {', '.join(task.needs) or 'none'}")
             return 0
         if args.resume and not re.fullmatch(r"[a-f0-9]{32}", args.resume):
             raise ValueError("invalid resume run id")
         home = Path.home().resolve()
-        user = getpass.getuser()
+        # The effective account, not $USER, which su without - leaves behind.
+        user = pwd.getpwuid(os.geteuid()).pw_name
         # Refuse ambiguous sudo HOME/user combinations for machine configuration.
         if profile != "proxmox" and os.environ.get("SUDO_USER"):
             raise ValueError(
                 "run setup as the target user, without sudo; individual commands elevate as needed"
             )
         env = environment(home, os.environ)
-        interactive = False
-        if not args.yes and not args.status:
+        # A terminal still asks for the sudo password under --yes; --yes only
+        # answers the task prompts. --status never prompts at all.
+        tty = False
+        if not args.status:
             try:
                 with open("/dev/tty", "r+"):
-                    interactive = True
+                    tty = True
             except OSError:
                 pass
+        interactive = tty and not args.yes
 
         def prompt(message):
             with open("/dev/tty", "r+") as terminal:
@@ -164,10 +173,11 @@ def main():
 
         firstmate = args.firstmate_dir
         if firstmate is not None:
-            if not str(firstmate):
+            # Checked before Path(), which turns "" into ".".
+            if not firstmate.strip():
                 raise ValueError("--firstmate-dir needs a checkout path")
             # Absolute, so git clone can never read the path as an option.
-            firstmate = firstmate.expanduser()
+            firstmate = Path(firstmate).expanduser()
             firstmate = firstmate if firstmate.is_absolute() else Path.cwd() / firstmate
         inputs = {
             "ssh_key": args.ssh_key or os.environ.get("PVE_OPERATOR_KEY", ""),
@@ -197,7 +207,7 @@ def main():
                 if shutil.which("sudo", path=env["PATH"]):
                     subprocess.run(["sudo", "-v"], env=env, check=False)
 
-        if interactive:
+        if tty:
             sudo_once()
         backend = Backend(profile, home, user, env, inputs, output=output)
         added = []
@@ -206,7 +216,7 @@ def main():
             selected, added = offer_prerequisites(
                 tasks, aliases, selected, args.only, backend, emit, ask
             )
-            if added:
+            if added and tty:
                 sudo_once()
         if interactive:
             if any(t.id == "ssh-keys" for t in selected) and not inputs["ssh_key"]:

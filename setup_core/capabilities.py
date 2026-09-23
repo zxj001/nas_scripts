@@ -8,14 +8,19 @@ def available(ctx, name):
     if name == "admin":
         return os.geteuid() == 0 or (ctx.have("sudo") and ctx.test("sudo", "-n", "true"))
     if name == "packages":
-        return ctx.have("dpkg") and ctx.run("dpkg", "--audit", privileged=True).stdout.strip() == ""
+        return (
+            ctx.have("dpkg")
+            and ctx.run("dpkg", "--audit", privileged=True, split=True).stdout.strip() == ""
+        )
     if name == "https":
         if not ctx.have("curl"):
             return False
         if ctx.profile == "macos":
             return True
         return (
-            ctx.run("dpkg-query", "-W", "-f=${Status}", "ca-certificates", allowed=(0, 1)).stdout
+            ctx.run(
+                "dpkg-query", "-W", "-f=${Status}", "ca-certificates", allowed=(0, 1), split=True
+            ).stdout
             == "install ok installed"
         )
     if name == "node":
@@ -31,12 +36,18 @@ def available(ctx, name):
 
         return valid_operator(ctx)
     if name == "apt-repos":
-        from setup_tasks.repos import configured
+        from setup_tasks.repos import usable
 
-        return configured(ctx)
+        return usable(ctx)
     if name == "tailnet":
-        return ctx.have("tailscale") and ctx.test("tailscale", "status")
-    if name in {"git", "brew", "tailscale", "claude", "herdr"}:
+        from setup_tasks.tailscale import connected
+
+        return connected(ctx)
+    if name == "tailscale":
+        from setup_tasks.tailscale import command
+
+        return command(ctx) is not None
+    if name in {"git", "brew", "claude", "herdr"}:
         return ctx.have(name)
     raise ValueError(f"unknown capability: {name}")
 

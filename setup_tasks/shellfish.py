@@ -17,8 +17,10 @@ from setup_tasks.common import apt
 TOOLS = ("openssl", "xxd", "curl", "crontab")
 # First line of our script; anything else at the target is an operator file.
 MARK = "# shellfish_widget.sh - "
-# The line earlier setup versions added, pointing into a repository checkout.
-OLD_LINE = re.compile(r"^\*/15 \* \* \* \* \S*/scripts/shellfish_widget\.sh >/dev/null 2>&1$")
+# Earlier setup versions ran the widget from a repository checkout. Such a line,
+# including one the operator gave mount points, --name or --target, is kept and
+# pointed at the installed copy, so its arguments survive.
+OLD_PATH = re.compile(r"(?<=\s)\S*/scripts/shellfish_widget\.sh(?=\s|$)")
 
 
 def target(ctx):
@@ -41,14 +43,14 @@ def cron_line(path):
 
 
 def read_crontab(ctx):
-    # stderr is merged into stdout at the command boundary.
-    output = ctx.run("crontab", "-l", allowed=(0, 1))
+    # stderr is never crontab content, and the crontab is not echoed.
+    output = ctx.run("crontab", "-l", allowed=(0, 1), quiet=True, split=True)
     if output.returncode == 0:
         return output.stdout
-    if "no crontab for" in output.stdout:
+    if "no crontab for" in output.stderr:
         return ""
     # An unreadable crontab is not an empty one; never overwrite it.
-    raise RuntimeError("cannot read crontab: " + output.stdout.strip())
+    raise RuntimeError("cannot read crontab: " + output.stderr.strip())
 
 
 def integration_missing(ctx):
@@ -112,7 +114,11 @@ def apply(ctx, task):
     if not path.exists() or path.read_text() != content or not os.access(path, os.X_OK):
         install(path, content)
     before = read_crontab(ctx)
-    lines = [line for line in before.splitlines() if not OLD_LINE.match(line)]
+    quoted = shlex.quote(str(path))
+    lines = [
+        line if line.lstrip().startswith("#") else OLD_PATH.sub(lambda _: quoted, line)
+        for line in before.splitlines()
+    ]
     if not any(str(path) in line for line in lines):
         lines.append(cron_line(path))
     others = [line for line in lines if "shellfish_widget.sh" in line and str(path) not in line]

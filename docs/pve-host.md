@@ -76,6 +76,8 @@ turns those off and turns on `pve-no-subscription`, for the suite in `/etc/os-re
 
 It never touches `debian.sources` or `sources.list`. Proxmox does not recommend
 `pve-no-subscription` for production; with a subscription, re-enable the enterprise repos.
+While `pvesubscription get` reports `status: active`, `repos` counts as done and leaves
+them enabled, and the package tasks run against them.
 The web UI's "no valid subscription" dialog is separate and stays.
 
 The step prefers the installed `/usr/share/keyrings/proxmox-archive-keyring.gpg`.

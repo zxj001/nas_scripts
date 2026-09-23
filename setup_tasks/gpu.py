@@ -8,20 +8,30 @@ COMPONENTS = ("contrib", "non-free", "non-free-firmware")
 
 def probe(ctx, task):
     if not ctx.have("lspci"):
+        # As before: no pciutils means no card to act on here.
         return ctx.result(
-            "manual", "GPU discovery needs lspci", "Install pciutils to inspect hardware"
+            "not-applicable", "lspci not found; install pciutils to look for an NVIDIA card"
         )
     cards = ctx.run("lspci", "-nn").stdout.lower()
     if not any("nvidia" in line and ("vga" in line or "3d" in line) for line in cards.splitlines()):
         return ctx.result(
             "not-applicable", "no NVIDIA display device; VM passthrough is a host task"
         )
-    if ctx.have("nvidia-smi") and ctx.test("nvidia-smi"):
+    # nvidia-smi exits 9 while the driver is not loaded (before the reboot, or
+    # when Secure Boot blocks the module): still to do, not a probe failure.
+    if ctx.have("nvidia-smi") and ctx.test("nvidia-smi", codes=tuple(range(256))):
         return ctx.result("satisfied")
     return ctx.result("pending")
 
 
 def apply(ctx, task):
+    if ctx.have("mokutil"):
+        state = ctx.run("mokutil", "--sb-state", allowed=tuple(range(256)), split=True).stdout
+        if "SecureBoot enabled" in state:
+            ctx.warnings.append(
+                "Secure Boot is on: the DKMS-built nvidia module will not load until Secure Boot "
+                "is disabled or the dkms key is enrolled (docs/gpu-passthrough.md)"
+            )
     paths = [
         ctx.path("/etc/apt/sources.list"),
         *ctx.path("/etc/apt/sources.list.d").glob("*.sources"),

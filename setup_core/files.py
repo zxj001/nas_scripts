@@ -99,6 +99,8 @@ class Change:
             self.path,
             base64.b64encode(data).decode(),
             privileged=True,
+            quiet=True,
+            split=True,
         )
         return json.loads(output.stdout)
 
@@ -110,9 +112,12 @@ class Change:
 
 
 def append_once(path, line, mode=0o600):
+    """mode applies only to a file this creates; an existing file keeps its own."""
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     if path.exists() and line in path.read_text().splitlines():
         return
+    created = not path.exists()
     with path.open("a") as stream:
         stream.write("\n" + line + "\n")
-    path.chmod(mode)
+    if created:
+        path.chmod(mode)

@@ -72,6 +72,12 @@ as_runner() {
     fi
 }
 
+# apt, waiting up to 10 minutes for the dpkg lock: on a fresh VM cloud-init or
+# unattended-upgrades often holds it for the first minutes.
+apt_get() {
+    as_root env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=600 -qq "$@"
+}
+
 ensure_user() {
     id "$RUNNER_USER" >/dev/null 2>&1 && return 0
     echo "Creating user $RUNNER_USER"
@@ -84,15 +90,15 @@ ensure_packages() {
     local icu="" need=()
     command -v curl >/dev/null || need+=(curl ca-certificates)
     if ! ldconfig -p | grep -q libicu; then
-        as_root apt-get update -qq
+        apt_get update
         icu=$(apt-cache pkgnames libicu | grep -E '^libicu[0-9]+$' | sort -V | tail -n1)
         [[ -n $icu ]] || die "no libicu package found in apt"
         need+=("$icu")
     fi
     ((${#need[@]})) || return 0
     echo "Installing ${need[*]}"
-    [[ -n $icu ]] || as_root apt-get update -qq
-    as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${need[@]}" >/dev/null
+    [[ -n $icu ]] || apt_get update
+    apt_get install -y "${need[@]}" >/dev/null
 }
 
 # Docker Engine and Compose from Debian (as setup_tasks/docker.py installs
@@ -111,8 +117,8 @@ ensure_docker() {
     fi
     if ((${#need[@]})); then
         echo "Installing ${need[*]}"
-        as_root apt-get update -qq
-        as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${need[@]}" >/dev/null
+        apt_get update
+        apt_get install -y "${need[@]}" >/dev/null
     fi
     if ! { systemctl is-enabled --quiet docker && systemctl is-active --quiet docker; }; then
         as_root systemctl enable --now docker
@@ -194,6 +200,7 @@ download_runner() {
     echo "$sha  $DIR/$tarball" | sha256sum -c --quiet - || die "checksum mismatch for $tarball"
     as_runner tar -xzf "$DIR/$tarball" -C "$DIR"
     as_runner rm "$DIR/$tarball"
+    as_runner touch "$DIR/.ghrunner-downloaded"
     # Remaining libraries (libssl, krb5, zlib, lttng); apt skips what is there.
     as_root "$DIR/bin/installdependencies.sh" >/dev/null \
         || echo "warning: bin/installdependencies.sh failed; the runner may not start" >&2
@@ -466,7 +473,9 @@ install_runner() {
     local token=$1
     ensure_packages
     ensure_user
-    runner_has config.sh || download_runner
+    # The marker is written after a complete extract, so an interrupted
+    # download is redone; a registered runner predates the marker.
+    runner_has .ghrunner-downloaded || runner_has .runner || download_runner
     ensure_docker
 
     if ! runner_has .runner; then
@@ -527,6 +536,11 @@ cmd_uninstall() {
 
 cmd_unregister() {
     local token
+    if ! runner_has .runner; then
+        if service_installed; then cmd_uninstall; fi
+        echo "Runner $NAME is not registered here; nothing to remove from GitHub"
+        return 0
+    fi
     token=$(get_token remove)
     if service_installed; then cmd_uninstall; fi
     (cd "$DIR" && as_runner ./config.sh remove --token "$token")
@@ -552,6 +566,11 @@ if [[ -z $RUNNER_USER ]]; then
     if [[ $EUID -eq 0 ]]; then RUNNER_USER=runner; else RUNNER_USER=$(id -un); fi
 fi
 [[ $RUNNER_USER != root ]] || die "the runner cannot run as root; pick another --user"
+case $COMMAND in
+    install|start|stop|status|uninstall|unregister|check|cleanup)
+        command -v systemctl >/dev/null || die "this needs systemd"
+        command -v apt-get >/dev/null || die "this needs Debian (apt)" ;;
+esac
 
 runner_dir() {
     local home

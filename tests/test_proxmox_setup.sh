@@ -115,7 +115,11 @@ apt-get() {
 shellfish_tools() { [ -f "$F/tools" ]; }
 crontab() {
     case "$1" in
-        -l) if [ -f "$F/crontab" ]; then cat "$F/crontab"; else echo "no crontab for root" >&2; return 1; fi ;;
+        -l)
+            # Some crontabs warn on stderr and still succeed.
+            echo "crontab: warning on stderr" >&2
+            if [ -f "$F/crontab" ]; then cat "$F/crontab"; else echo "no crontab for root" >&2; return 1; fi
+            ;;
         -) cat >"$F/crontab"; echo "crontab write" >>"$F/calls" ;;
     esac
 }
@@ -939,6 +943,7 @@ run --yes --only shellfish >/dev/null
 [ -x "$F/usr/local/bin/shellfish_widget.sh" ] || fail "widget script not installed"
 [ "$(sed -n 1p "$F/crontab")" = '0 3 * * * vzdump' ] || fail "existing cron entry lost"
 [ "$(grep -c 'shellfish_widget.sh' "$F/crontab")" = 1 ] || fail "widget cron line not added exactly once"
+! grep -q 'warning on stderr' "$F/crontab" || fail "crontab -l stderr written into the crontab"
 [ "$(grep -c 'crontab write' "$F/calls")" = 1 ] || fail "crontab rewritten on rerun"
 [ "$(grep -c '^curl' "$F/calls")" = 1 ] || fail "widget downloaded again on rerun"
 [ "$(cat "$F/sent")" = sent ] || fail "widget not sent exactly once"

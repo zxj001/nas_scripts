@@ -84,6 +84,8 @@ def registry(profile):
         add("herdr.install", "apps", ("https",), ("herdr",))
         add("herdr.integration", "apps", ("herdr", "claude"), default=False)
         add("firstmate", "repository", ("git",))
+        add("docker", "docker", package, resources=("packages",))
+        add("chromium", "browser", package, resources=("packages",))
         if profile == "debian":
             add("gpu", "gpu", package, resources=("packages",))
     if linux:

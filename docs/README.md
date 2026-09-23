@@ -69,7 +69,7 @@ Integration from the iPhone app first, then run `--only shellfish`. See
 | 2 | Update, guest agent **(VM)**, disable sleep, snapshot **(VM)** | [02-post-install.md](02-post-install.md) |
 | 3 | SSH server, keys, hardening | [03-ssh.md](03-ssh.md) |
 | 4 | Tailscale + iPhone access | [04-tailscale.md](04-tailscale.md) |
-| 5 | git, Python + pip, gh, Node 22 via nvm | [05-dev-tools.md](05-dev-tools.md) |
+| 5 | git, Python + pip, gh, Node 22 via nvm, Docker, Chromium | [05-dev-tools.md](05-dev-tools.md) |
 | 6 | Codex, Pi, Claude Code, FirstMate | [06-agent-clis.md](06-agent-clis.md) |
 | 7 | Herdr for persistent agent sessions | [07-herdr.md](07-herdr.md) |
 | 8 | ShellFish widget: CPU, temp, memory, disk on the iPhone | [08-shellfish-widgets.md](08-shellfish-widgets.md) |
@@ -87,6 +87,8 @@ When you're done, add the machine to [Local Machines](../README.md#local-machine
 - [ ] `tailscale status` shows the machine; SSH works from the iPhone on cellular
 - [ ] `gh auth status` is logged in; `node --version` is 22.19.0 or newer
 - [ ] `python3 -m pip --version` works and `python3 -m venv` creates a venv
+- [ ] `docker compose version` and `docker run --rm hello-world` work without sudo
+- [ ] `chromium --version` works (macOS: Google Chrome or Chromium is installed)
 - [ ] `codex`, `pi` and `claude` start and are signed in
 - [ ] `herdr` detaches and reattaches with panes still running
 - [ ] ShellFish widget on the iPhone shows CPU, Temp, Mem and Disk

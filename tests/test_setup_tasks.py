@@ -789,3 +789,158 @@ def test_empty_widget_target_means_the_shared_widget(tmp_path):
     (ctx.home / ".shellfishrc").write_text("")
     shellfish.apply(ctx, Task("shellfish", ""))
     assert "--target" not in written[-1]
+
+
+APT_INSTALL = ("apt-get", "-o", "Dpkg::Options::=--force-confold", "install", "--no-remove", "-y")
+
+
+def docker_fixture(tmp_path, monkeypatch, outputs, *, members=(), login=False):
+    from types import SimpleNamespace
+
+    from setup_tasks import docker
+
+    group = SimpleNamespace(gr_gid=990, gr_mem=list(members))
+    monkeypatch.setattr(docker, "group", lambda: group)
+    monkeypatch.setattr(docker.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(docker.os, "getgroups", lambda: [1000, *([990] if login else [])])
+    ctx = Fixture(tmp_path, phase="apply", outputs=outputs)
+    ctx.outputs.update(
+        {
+            ("apt-get", "update"): (0, ""),
+            ("systemctl", "enable", "--now", "docker"): (0, ""),
+            ("/usr/sbin/usermod", "-aG", "docker", "fixture"): lambda: (
+                group.gr_mem.append("fixture") or Output(0, "")
+            ),
+        }
+    )
+    return docker, group, ctx
+
+
+def installed_docker(overrides=None):
+    return {
+        ("have", "dockerd"): True,
+        ("have", "docker"): True,
+        ("docker", "compose", "version"): (0, "Docker Compose version 2.26.1"),
+        ("systemctl", "is-enabled", "--quiet", "docker"): (0, ""),
+        ("systemctl", "is-active", "--quiet", "docker"): (0, ""),
+        **(overrides or {}),
+    }
+
+
+def test_docker_installs_engine_compose_and_group_then_needs_a_new_login(tmp_path, monkeypatch):
+    docker, group, ctx = docker_fixture(
+        tmp_path,
+        monkeypatch,
+        {
+            ("docker", "compose", "version"): (1, ""),
+            ("dpkg-query", "-W", "-f=${Status}", "docker-ce"): (1, ""),
+            (*APT_INSTALL, "docker.io", "docker-cli", "docker-compose"): (0, ""),
+        },
+    )
+    task = Task("docker", "")
+    assert docker.probe(ctx, task).outcome == "pending"
+    result = docker.apply(ctx, task)
+    assert result.outcome == "deferred" and "Log out" in result.action
+    assert group.gr_mem == ["fixture"]
+    ctx.outputs.update(installed_docker())
+    # Until the operator logs in again, status says so instead of claiming success.
+    assert docker.probe(ctx, task).outcome == "deferred"
+
+
+def test_docker_is_satisfied_only_when_usable_without_sudo(tmp_path, monkeypatch):
+    docker, _, ctx = docker_fixture(
+        tmp_path, monkeypatch, installed_docker(), members=("fixture",), login=True
+    )
+    task = Task("docker", "")
+    assert docker.probe(ctx, task).outcome == "satisfied"
+    ctx.outputs[("systemctl", "is-active", "--quiet", "docker")] = (3, "")
+    assert docker.probe(ctx, task).outcome == "pending"
+    ctx.outputs[("systemctl", "is-active", "--quiet", "docker")] = (0, "")
+    ctx.outputs[("docker", "compose", "version")] = (125, "unknown command: docker compose")
+    assert docker.probe(ctx, task).outcome == "pending"
+
+
+def test_docker_adds_the_user_to_the_group_of_an_existing_install(tmp_path, monkeypatch):
+    docker, group, ctx = docker_fixture(tmp_path, monkeypatch, installed_docker(), login=True)
+    task = Task("docker", "")
+    assert docker.probe(ctx, task).reason == "fixture is not in the docker group"
+    assert docker.apply(ctx, task).outcome == "changed"
+    assert group.gr_mem == ["fixture"]
+    assert not any(args[0] == "apt-get" for args, _ in ctx.calls)
+
+
+def test_docker_ce_without_compose_is_manual_and_installs_nothing(tmp_path, monkeypatch):
+    docker, _, ctx = docker_fixture(
+        tmp_path,
+        monkeypatch,
+        installed_docker(
+            {
+                ("docker", "compose", "version"): (1, ""),
+                ("dpkg-query", "-W", "-f=${Status}", "docker-ce"): (0, "install ok installed"),
+            }
+        ),
+    )
+    result = docker.apply(ctx, Task("docker", ""))
+    assert result.outcome == "manual" and "docker-compose-plugin" in result.action
+    assert not any(args[0] in {"apt-get", "systemctl"} for args, _ in ctx.calls)
+
+
+def test_mac_docker_desktop_is_manual_until_its_engine_runs(tmp_path, monkeypatch):
+    from setup_tasks import docker
+
+    ctx = Fixture(tmp_path, profile="macos", phase="apply")
+    task = Task("docker", "")
+    assert docker.probe(ctx, task).outcome == "pending"
+
+    def install():
+        cli = ctx.path(docker.MAC_APP_CLI)
+        cli.parent.mkdir(parents=True)
+        cli.write_text("")
+        return Output(0, "")
+
+    ctx.outputs[("brew", "install", "--cask", "docker-desktop")] = install
+    cli = str(ctx.path(docker.MAC_APP_CLI))
+    ctx.outputs[(cli, "compose", "version")] = (0, "Docker Compose version v2.39.1")
+    ctx.outputs[(cli, "info")] = (1, "Cannot connect to the Docker daemon")
+    result = docker.apply(ctx, task)
+    assert result.outcome == "manual" and "Open Docker.app" in result.action
+    ctx.outputs[(cli, "info")] = (0, "Server Version: 28.3.2")
+    assert docker.probe(ctx, task).outcome == "satisfied"
+
+
+def test_chromium_installs_the_debian_package(tmp_path):
+    from setup_tasks import browser
+
+    ctx = Fixture(
+        tmp_path,
+        phase="apply",
+        outputs={("apt-get", "update"): (0, ""), (*APT_INSTALL, "chromium"): (0, "")},
+    )
+    task = Task("chromium", "")
+    assert browser.probe(ctx, task).outcome == "pending"
+    assert browser.apply(ctx, task).outcome == "changed"
+    ctx.outputs[("have", "chromium")] = True
+    assert browser.probe(ctx, task).outcome == "satisfied"
+
+
+@pytest.mark.parametrize("app", ["Chromium.app", "Google Chrome.app"])
+def test_mac_accepts_an_installed_chromium_browser(tmp_path, app):
+    from setup_tasks import browser
+
+    ctx = Fixture(tmp_path, profile="macos")
+    ctx.path("/Applications/" + app).mkdir(parents=True)
+    assert browser.probe(ctx, Task("chromium", "")).outcome == "satisfied"
+
+
+def test_mac_installs_google_chrome_when_no_chromium_browser(tmp_path):
+    from setup_tasks import browser
+
+    ctx = Fixture(
+        tmp_path,
+        profile="macos",
+        phase="apply",
+        outputs={("brew", "install", "--cask", "google-chrome"): (0, "")},
+    )
+    task = Task("chromium", "")
+    assert browser.probe(ctx, task).outcome == "pending"
+    assert browser.apply(ctx, task).outcome == "changed"

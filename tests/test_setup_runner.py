@@ -507,3 +507,10 @@ def test_interactive_command_uses_the_terminal():
         return execute(["sh", "-c", script], env=env, interactive=True).returncode == 0
 
     assert in_terminal(child, b"ok\n") == 0
+
+
+@pytest.mark.parametrize("value", ["a b", "x;rm", "$(id)", "a/b"])
+def test_widget_target_must_be_a_plain_name(value):
+    completed = cli("--status", "--only", "shellfish", "--widget-target", value)
+    assert completed.returncode == 2
+    assert "--widget-target takes" in completed.stderr

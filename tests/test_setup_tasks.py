@@ -419,11 +419,18 @@ def test_repos_task_maps_the_adapter_exit_code(tmp_path, monkeypatch):
 
 
 def shellfish_fixture(
-    tmp_path, *, tools=True, crontab=(1, "", "no crontab for fixture"), profile="debian"
+    tmp_path,
+    *,
+    tools=True,
+    crontab=(1, "", "no crontab for fixture"),
+    profile="debian",
+    target="",
 ):
     outputs = {("have", t): tools for t in shellfish.TOOLS}
     outputs[("crontab", "-l")] = crontab
     ctx = Fixture(tmp_path, profile=profile, phase="apply", outputs=outputs)
+    if target is not None:
+        ctx.inputs["widget_target"] = target
     written = []
 
     def install_crontab(args):
@@ -733,3 +740,52 @@ def test_mac_tailscale_uses_the_app_cli_without_sudo(tmp_path):
     assert tailscale.probe(ctx, task).outcome == "manual"
     assert tailscale.apply(ctx, task).outcome == "manual"
     assert not any("up" in args for args, _ in ctx.calls)
+
+
+def test_shellfish_sends_to_this_machines_widget(tmp_path, monkeypatch):
+    monkeypatch.setattr(shellfish.socket, "gethostname", lambda: "pve1.home.arpa")
+    ctx, written = shellfish_fixture(
+        tmp_path, profile="proxmox", target=None, crontab=(0, "0 3 * * * vzdump\n")
+    )
+    (ctx.home / ".shellfishrc").write_text("")
+    task = Task("shellfish", "")
+    assert shellfish.apply(ctx, task).outcome == "changed"
+    path = shellfish.target(ctx)
+    assert written[-1].splitlines() == [
+        "0 3 * * * vzdump",
+        f"*/15 * * * * {path} --target pve1 >/dev/null 2>&1",
+    ]
+    assert shellfish.probe(ctx, task).outcome == "satisfied"
+
+
+def test_shellfish_adds_a_target_to_an_existing_line_and_keeps_its_arguments(tmp_path):
+    old = "*/15 * * * * /home/u/nas_scripts/scripts/shellfish_widget.sh / /media/Drive1 >/dev/null 2>&1"
+    ctx, written = shellfish_fixture(tmp_path, target="debian-mini", crontab=(0, old + "\n"))
+    (ctx.home / ".shellfishrc").write_text("")
+    task = Task("shellfish", "")
+    path = shellfish.target(ctx)
+    shellfish.install(path, shellfish.bundled())
+    assert shellfish.probe(ctx, task).outcome == "pending"
+    assert shellfish.apply(ctx, task).outcome == "changed"
+    assert written[-1].splitlines() == [
+        f"*/15 * * * * {path} --target debian-mini / /media/Drive1 >/dev/null 2>&1"
+    ]
+    assert shellfish.probe(ctx, task).outcome == "satisfied"
+
+
+def test_shellfish_keeps_a_target_the_operator_chose(tmp_path):
+    ctx, written = shellfish_fixture(tmp_path, target="debian-mini")
+    (ctx.home / ".shellfishrc").write_text("")
+    path = shellfish.target(ctx)
+    shellfish.install(path, shellfish.bundled())
+    line = f"*/15 * * * * {path} --target phone2 >/dev/null 2>&1"
+    ctx.outputs[("crontab", "-l")] = (0, line + "\n")
+    assert shellfish.probe(ctx, Task("shellfish", "")).outcome == "satisfied"
+    assert written == []
+
+
+def test_empty_widget_target_means_the_shared_widget(tmp_path):
+    ctx, written = shellfish_fixture(tmp_path, target="")
+    (ctx.home / ".shellfishrc").write_text("")
+    shellfish.apply(ctx, Task("shellfish", ""))
+    assert "--target" not in written[-1]

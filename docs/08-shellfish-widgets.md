@@ -37,10 +37,12 @@ The step:
 - adds this line to your crontab and keeps the entries already there:
 
   ```
-  */15 * * * * /home/YOU/.local/bin/shellfish_widget.sh >/dev/null 2>&1
+  */15 * * * * /home/YOU/.local/bin/shellfish_widget.sh --target HOSTNAME >/dev/null 2>&1
   ```
 
-  An older setup's line that ran the script from `~/tools/nas_scripts` is replaced.
+  `--target` sends to this machine's own widget (see [Several machines](#several-machines)).
+  An older setup's line that ran the script from `~/tools/nas_scripts` is pointed at the
+  installed copy and keeps its arguments.
 - sends one update straight away.
 
 Until Shell Integration is installed, the step shows `manual` and only prints the
@@ -51,14 +53,22 @@ On the Proxmox host, use `proxmox_setup.sh --only shellfish` instead. See
 
 ## Several machines
 
-Every machine with Shell Integration sends to the same phone. Without ShellFish Pro there
-is one widget, and the machines replace each other's data on it. With Pro, give each
-widget its own identifier in the app (long-press → **Edit Widget**), then point each
-machine at one with `crontab -e`:
+Every machine with Shell Integration sends to the same phone. Each one sends to the
+widget named after its short hostname (`pve1`, `debian-mini`), so the machines don't
+replace each other's data. Separate widgets need ShellFish Pro.
+
+On the iPhone, add one widget per machine (stack them to save space). Long-press each →
+**Edit Widget** and set its identifier to that machine's hostname.
+
+The setup step picks the name. Change it with `--widget-target`:
 
 ```
-*/15 * * * * /usr/local/bin/shellfish_widget.sh --target pve1 >/dev/null 2>&1
+setup-machine --only shellfish --widget-target nas      # a different identifier
+setup-machine --only shellfish --widget-target ''       # the one shared widget, no Pro
 ```
+
+A widget line without `--target` gets one added. A line you pointed at a target yourself
+(`crontab -e`) is left alone.
 
 ## By hand
 

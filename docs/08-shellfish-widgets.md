@@ -3,8 +3,10 @@
 Automated by `setup-machine --only shellfish` once the iPhone side is done.
 
 A Secure ShellFish widget on the iPhone Home Screen, Lock Screen, StandBy or Apple Watch
-shows this machine's CPU, CPU temperature, memory and disk usage. Cron pushes new values
-every 15 minutes.
+shows this machine's name, CPU, CPU temperature, memory and disk usage. Cron pushes new
+values every 15 minutes.
+
+Values are green, turn orange at 75% (70°C for Temp) and red at 90% (85°C).
 
 ## On the iPhone
 
@@ -46,6 +48,7 @@ sudo apt install -y openssl xxd curl cron
 scripts/shellfish_widget.sh --print             # show the values, send nothing
 scripts/shellfish_widget.sh                     # send them
 scripts/shellfish_widget.sh / /media/Drive1     # one disk entry per mount point
+scripts/shellfish_widget.sh --name NAS          # title instead of the short hostname
 ```
 
 To show more disks or change how often it runs, edit the entry with `crontab -e`.
@@ -57,7 +60,7 @@ To show more disks or change how often it runs, edit the entry with `crontab -e`
 | Mem | `MemTotal` minus `MemAvailable`, from `/proc/meminfo` |
 | Disk | `df` use% of each mount point, `/` by default |
 
-Temp shows `n/a` in a VM, because a VM can't see the host's sensors. For a real reading,
+Temp is left out in a VM, because a VM can't see the host's sensors. For a real reading,
 run the script on bare metal such as `debianbeelink`. See the root
 [README](../README.md#temperatures) for more on temperatures.
 
@@ -71,6 +74,8 @@ run the script on bare metal such as `debianbeelink`. See the root
   display error.
 - **Throttling:** iOS limits how often widgets update. The Shell Integration log in the
   app shows the stats. Running more often than every 15 minutes doesn't help.
+- **Widget name:** the "Widget 1" label comes from the app, not the server. The
+  machine name is the first line of the widget's content.
 - **Options:** run `widget` with no arguments for the full list. Summary:
   - `50%` or `110/220` shows as progress.
   - Icons are SF Symbols names such as `cpu.fill`.

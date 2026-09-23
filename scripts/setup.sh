@@ -766,7 +766,7 @@ step_deps() {
         macos:tailscale|macos:dev-tools|macos:gh|macos:codex|macos:claude)
             deps="brew $deps" ;;
     esac
-    echo $deps
+    echo "$deps"
 }
 
 selected() {

@@ -12,7 +12,7 @@ Helpers live in `scripts/`. Run them from the repo root, e.g.
 |--------|---------|
 | `scripts/setup.sh` | Set up a Debian 13 or macOS machine the way [docs/](docs/README.md) describes; `--status` shows what is left to do |
 | `scripts/proxmox_setup.sh` | The same for the Proxmox VE host: root SSH keys, SSH hardening, Tailscale, optional subnet router, ShellFish widget ([docs/pve-host.md](docs/pve-host.md)) |
-| `scripts/shellfish_widget.sh` | Push CPU, CPU temperature, memory and disk usage to the ShellFish iPhone widget; cron runs it every 15 minutes ([docs/08-shellfish-widgets.md](docs/08-shellfish-widgets.md)) |
+| `scripts/shellfish_widget.sh` | Push the machine name, CPU, CPU temperature, memory and disk usage to the ShellFish iPhone widget; setup installs it and cron runs it every 15 minutes. `setup_adapters/shellfish_widget.sh` links to it so it ships in the setup bundle ([docs/08-shellfish-widgets.md](docs/08-shellfish-widgets.md)) |
 | `scripts/disk_check.py` | Disk space on the Plex folders' drives plus drive health; exits 1 if anything needs attention (cron-friendly) |
 | `scripts/find_largest_files.py` | List the largest files under the Plex folders (or given directories) |
 | `scripts/defrag.py` | Find the most fragmented files using `filefrag`; `--defrag` runs `e4defrag` on them |

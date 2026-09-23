@@ -1,6 +1,6 @@
 # 3. SSH
 
-Automated by `setup-machine --only ssh,ssh-keys,ssh-harden`.
+Automated by `setup-machine --only ssh,ssh-keys,ssh-harden --with-deps`.
 
 SSH listens on the default port 22.
 
@@ -45,7 +45,7 @@ Only once key login works. Keep your current session open.
 On reruns, setup checks the effective global policy using `sudo -n /usr/sbin/sshd -T`,
 so comments, directive order, and settings supplied by other drop-ins do not cause
 a file-content conflict. Without cached sudo credentials, `--status` may report
-`todo`; it never prompts for privilege.
+`pending`; it never prompts for privilege.
 
 If `99-local.conf` already exists but its effective policy is not hardened, setup
 leaves it unchanged, explicitly reports `SSH hardening skipped`, and continues

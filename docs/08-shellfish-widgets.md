@@ -28,14 +28,19 @@ setup-machine --only shellfish
 
 The step:
 
-- installs `openssl`, `xxd`, `curl` and `cron`. `widget` uses the first three to encrypt
-  its message. Without `xxd` it still exits 0, but the phone gets nothing it can read.
+- installs `openssl`, `xxd`, `curl` and `cron` if any are missing. `widget` uses the
+  first three to encrypt its message. Without `xxd` it still exits 0, but the phone gets
+  nothing it can read.
+- copies the widget script from the setup bundle to `~/.local/bin/shellfish_widget.sh`,
+  so cron doesn't depend on a checkout. Rerunning the step after a setup update installs
+  the new version. A different file already at that path is left alone and reported.
 - adds this line to your crontab and keeps the entries already there:
 
   ```
-  */15 * * * * ~/tools/nas_scripts/scripts/shellfish_widget.sh >/dev/null 2>&1
+  */15 * * * * /home/YOU/.local/bin/shellfish_widget.sh >/dev/null 2>&1
   ```
 
+  An older setup's line that ran the script from `~/tools/nas_scripts` is replaced.
 - sends one update straight away.
 
 Until Shell Integration is installed, the step shows `manual` and only prints the

@@ -1,0 +1,25 @@
+name: Setup release
+on:
+  push:
+    tags: ['setup-v*']
+permissions:
+  contents: write
+jobs:
+  bundle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install pytest shellcheck-py
+      - run: python -m pytest tests/test_setup_runner.py tests/test_setup_tasks.py tests/test_setup_distribution.py tests/test_setup_sh.py
+      - run: bash tests/integration/debian.sh
+      - name: Check tag matches bundle version
+        run: python -c 'import os; from setup_core import VERSION; assert os.environ["GITHUB_REF_NAME"] == "setup-v" + VERSION'
+      - run: python scripts/build_setup.py --check
+      - run: python dist/setup.pyz --plan --profile debian --only tailscale --with-deps
+      - name: Publish complete versioned bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/setup.pyz dist/setup.pyz.sha256 --verify-tag --generate-notes

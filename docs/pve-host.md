@@ -9,11 +9,16 @@ own node keys in that file do not count. Then, as root on the host:
 curl -fsSL https://raw.githubusercontent.com/zxj001/nas_scripts/main/scripts/proxmox_setup.sh | bash
 ```
 
+The remote wrapper requires the `setup-v1.0.0` release. Until it is published, run
+`bash scripts/proxmox_setup.sh` from a checkout. The shared runner preserves the
+Proxmox policy; real Proxmox VM validation remains a release gate. See
+[runner behavior and release prerequisites](setup-runner.md).
+
 It offers `repos` (see [Package repositories](#package-repositories)), `ssh-keys` (paste
 your key), `ssh-harden`, `tailscale`, `subnet-router` and `shellfish` (see
-[ShellFish widget](#shellfish-widget)), with the same `--status`, `--yes`
-and `--only a,b` flags as `setup-machine`. After `ssh-keys`, log
-in with the key from a new terminal when `ssh-harden` asks. Rerun the line to update. It
+[ShellFish widget](#shellfish-widget)), with
+the same `--status`, `--yes` and `--only a,b` flags as `setup-machine`. After `ssh-keys`, log
+in with the key from a new terminal, then rerun deferred `ssh-harden`. Updates are explicit. It
 refuses to run anywhere but a Proxmox VE host.
 
 `subnet-router` defaults to no at the prompt, but `--yes` runs every step that is not done,
@@ -24,7 +29,7 @@ curl -fsSL https://raw.githubusercontent.com/zxj001/nas_scripts/main/scripts/pro
   PVE_OPERATOR_KEY="ssh-ed25519 AAAA... you@client" bash -s -- --yes --only repos,ssh-keys
 # log in once with that key from the client, then:
 curl -fsSL https://raw.githubusercontent.com/zxj001/nas_scripts/main/scripts/proxmox_setup.sh |
-  bash -s -- --yes --only ssh-harden,tailscale
+  bash -s -- --yes --only ssh-harden,tailscale --with-deps
 ```
 
 Host-side, on `pve1` itself (192.168.1.203, web UI :8006). The numbered steps cover a
@@ -71,6 +76,8 @@ turns those off and turns on `pve-no-subscription`, for the suite in `/etc/os-re
 
 It never touches `debian.sources` or `sources.list`. Proxmox does not recommend
 `pve-no-subscription` for production; with a subscription, re-enable the enterprise repos.
+While `pvesubscription get` reports `status: active`, `repos` counts as done and leaves
+them enabled, and the package tasks run against them.
 The web UI's "no valid subscription" dialog is separate and stays.
 
 The step prefers the installed `/usr/share/keyrings/proxmox-archive-keyring.gpg`.
@@ -252,21 +259,17 @@ the host. It shows `pve1` with a real CPU temperature, which a VM can't read.
      bash -s -- --only shellfish
    ```
 
-   It installs `openssl`, `xxd`, `curl` and `cron` if any are missing, downloads the widget
-   script to `/usr/local/bin/shellfish_widget.sh`, adds a 15-minute entry to root's
-   crontab (keeping the existing entries) and sends the first update. Run `repos` first if
-   `apt-get update` fails on the enterprise repository.
+   It installs `openssl`, `xxd`, `curl` and `cron` if any are missing, copies the widget
+   script from the setup bundle to `/usr/local/bin/shellfish_widget.sh`, adds a 15-minute
+   entry to root's crontab (keeping the existing entries) and sends the first update.
+   Packages need the enterprise repositories off, so `--only shellfish` offers `repos`
+   first if it isn't done.
 
 Temp needs a loaded CPU sensor driver; see [Temperatures](#temperatures) if it is missing
 from the widget.
 
-Nothing is cloned onto the host, so an existing `/usr/local/bin/shellfish_widget.sh` is
-kept. To update it:
-
-```
-curl -fsSL https://raw.githubusercontent.com/zxj001/nas_scripts/main/scripts/shellfish_widget.sh \
-  -o /usr/local/bin/shellfish_widget.sh && chmod 755 /usr/local/bin/shellfish_widget.sh
-```
+Nothing is cloned onto the host. To update the widget script, rerun the step with a
+newer setup release; a different file at that path is left alone and reported.
 
 ## Done checklist
 

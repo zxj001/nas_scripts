@@ -3,7 +3,7 @@
 set -euo pipefail
 setup_main() {
     local candidate
-    local profile='auto' readonly=0 yes=0 arg py='' root='' source_path=''
+    local profile='@PROFILE@' readonly=0 yes=0 arg py='' root='' source_path=''
     for arg in "$@"; do
         case "$arg" in --status|--plan|--help|-h) readonly=1 ;; --yes) yes=1 ;; esac
     done
@@ -60,7 +60,7 @@ setup_main() {
     # Expanded now: the trap can run after this function's locals are gone.
     # shellcheck disable=SC2064
     trap "rm -rf $(printf %q "$temporary")" EXIT
-    url='https://github.com/zxj001/nas_scripts/releases/download/setup-v1.0.0'
+    url='https://github.com/zxj001/nas_scripts/releases/download/setup-v@VERSION@'
     # Fetch complete, version-matched assets; never stream installers into a shell.
     # Read-only runs fetch it too: a verified bundle in a temporary directory
     # installs nothing. A failed fetch or checksum is a bootstrap error (2).
@@ -75,7 +75,7 @@ for name in ("setup.pyz", "setup.pyz.sha256"):
 p=pathlib.Path(sys.argv[1]); expected=(p/"setup.pyz.sha256").read_text().split()[0]
 if hashlib.sha256((p/"setup.pyz").read_bytes()).hexdigest()!=expected: raise SystemExit("setup checksum mismatch")
 ' "$temporary"; then
-        echo "could not fetch a verified setup-v1.0.0 bundle from $url" >&2
+        echo "could not fetch a verified setup-v@VERSION@ bundle from $url" >&2
         rm -rf "$temporary"
         trap - EXIT
         return 2

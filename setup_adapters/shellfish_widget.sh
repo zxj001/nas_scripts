@@ -1,0 +1,1 @@
+../scripts/shellfish_widget.sh

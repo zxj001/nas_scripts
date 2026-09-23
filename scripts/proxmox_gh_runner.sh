@@ -28,8 +28,9 @@
 # Options: --name (VM name, which becomes the hostname and the runner name),
 # --token (registration token for create, removal token for destroy; also
 # $GHRUNNER_TOKEN, else asked for), --cores (2), --memory MB (4096), --disk GB
-# (40), --labels (extra runner labels), --storage (local-lvm), --bridge (vmbr0),
-# --ssh-keys (file of public keys for the VM's `debian` user; default
+# (40), --labels (extra runner labels), --storage (local-lvm), --bridge
+# (vmbr0), --ssh-keys (file of public keys for the VM's `debian` user,
+# required as SSH with a key is the only login; default
 # /root/.ssh/authorized_keys), --template-id (9100), --yes (destroy without
 # asking), --rebuild (template: replace the existing one).
 set -euo pipefail
@@ -41,7 +42,7 @@ SNIPPET=gh-runner-vendor.yaml
 SETUP_URL=https://raw.githubusercontent.com/zxj001/nas_scripts/main/scripts/ghrunner_setup.sh
 
 usage() {
-    sed -n '2,34p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 die() {
@@ -239,10 +240,7 @@ configure_vm() {
     snippet=$(ensure_snippet)
     ((fresh || CORES_SET)) && settings+=(--cores "$CORES")
     ((fresh || MEMORY_SET)) && settings+=(--memory "$MEMORY")
-    if ((fresh)); then
-        settings+=(--cicustom "vendor=$snippet")
-        [[ -z $keys ]] || settings+=(--sshkeys "$keys")
-    fi
+    ((fresh)) && settings+=(--cicustom "vendor=$snippet" --sshkeys "$keys")
     ((${#settings[@]} == 0)) || qm set "$vmid" "${settings[@]}" >/dev/null
     if ((fresh || DISK_SET)); then
         size=$(disk_gb "$vmid")
@@ -261,7 +259,10 @@ configure_vm() {
 cmd_create() {
     [[ -n $NAME ]] || die "create needs --name"
     [[ $NAME =~ ^[a-z0-9][a-z0-9-]*$ ]] || die "--name must be a hostname: lowercase letters, digits, -"
-    [[ -z $SSH_KEYS || -f $SSH_KEYS ]] || die "no ssh keys file $SSH_KEYS"
+    [[ -n $SSH_KEYS ]] || die "no /root/.ssh/authorized_keys; pass --ssh-keys FILE (the VM's only login is SSH with a key)"
+    [[ -f $SSH_KEYS ]] || die "no ssh keys file $SSH_KEYS"
+    # Lines may start with options such as restrict or from="...".
+    grep -qE '(ssh-(ed25519|rsa)|ecdsa-sha2-|sk-(ssh|ecdsa)-)' "$SSH_KEYS" || die "$SSH_KEYS has no public keys"
     local vmid token report
     vmid=$(vm_id "$NAME")
     if [[ -n $vmid ]]; then

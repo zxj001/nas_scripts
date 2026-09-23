@@ -19,6 +19,9 @@ REPO_DIR="$HOME/tools/nas_scripts"
 detect_os() { OS=debian; }
 tool_path() { :; }
 curl() { echo 'unexpected download' >&2; return 99; }
+# Tests exercise one step; the dependency tests put real_add_deps back.
+eval "real_$(declare -f add_deps)"
+add_deps() { :; }
 sudo() {
     local arg
     local args=()
@@ -684,3 +687,72 @@ python3() {
 MISSING=none check_dev_tools
 MISSING=''' + missing + r''' check_dev_tools && exit 1 || true
 ''')
+
+
+@pytest.mark.skipif(not Path('/proc/stat').exists(), reason='reads /proc')
+def test_shellfish_widget_tolerates_shellfishrc_unset_variables(tmp_path):
+    # The real file reads $TMUX and friends, which cron leaves unset.
+    (tmp_path / '.shellfishrc').write_text(
+        'if [[ -n "$TMUX" ]]; then :; fi\nfalse\n'
+        'widget() { echo "$*" >"$HOME/sent"; }\n')
+    bin_dir = tmp_path / 'bin'
+    bin_dir.mkdir()
+    for tool in ('openssl', 'xxd', 'curl'):
+        (bin_dir / tool).write_text('#!/bin/sh\n')
+        (bin_dir / tool).chmod(0o755)
+    script = Path(__file__).resolve().parents[1] / 'scripts/shellfish_widget.sh'
+    result = subprocess.run([str(script)], text=True, capture_output=True,
+                            env={'PATH': f'{bin_dir}:/usr/bin:/bin', 'HOME': str(tmp_path)})
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / 'sent').read_text().startswith('cpu.fill ')
+
+
+@pytest.mark.parametrize('os_name', ['debian', 'macos'])
+def test_step_deps_are_registered_and_come_first(tmp_path, os_name):
+    run(tmp_path, 'OS=' + os_name + r'''
+for step in "${STEPS[@]}"; do
+    for dep in $(step_deps "$step"); do
+        seen=0
+        for s in "${STEPS[@]}"; do
+            [ "$s" = "$step" ] && break
+            [ "$s" = "$dep" ] && seen=1
+        done
+        [ "$seen" = 1 ] || { echo "$step needs $dep, which is not before it" >&2; exit 1; }
+    done
+done
+''')
+
+
+DEP_STUBS = r'''
+STEPS=(sudo ssh dev-tools node pi shellfish)
+for s in sudo ssh dev-tools node pi shellfish; do
+    f=${s//-/_}
+    eval "check_$f() { [ -f \"\$HOME/done-$s\" ]; }"
+    eval "do_$f() { echo $s >>\"\$HOME/ran\"; touch \"\$HOME/done-$s\"; }"
+    eval "default_$f() { echo yes; }"
+done
+signin_list() { :; }
+add_deps() { real_add_deps; }
+'''
+
+
+def test_only_adds_unfinished_deps_transitively(tmp_path):
+    (tmp_path / 'done-sudo').touch()
+    (tmp_path / 'done-ssh').touch()
+    result = run(tmp_path, DEP_STUBS + 'main --status --only pi,shellfish')
+    assert 'pi needs node' in result.stderr
+    assert 'shellfish needs dev-tools' in result.stderr
+    assert 'ssh' not in result.stderr  # done deps are not mentioned
+    steps = [line.split()[0] for line in result.stdout.splitlines()[1:]]
+    assert steps == ['dev-tools', 'node', 'pi', 'shellfish']
+    assert not (tmp_path / 'ran').exists()
+
+
+def test_only_yes_runs_deps_before_the_step(tmp_path):
+    run(tmp_path, DEP_STUBS + 'main --yes --only shellfish')
+    assert (tmp_path / 'ran').read_text().split() == ['sudo', 'ssh', 'dev-tools', 'shellfish']
+
+
+def test_without_only_nothing_is_added(tmp_path):
+    result = run(tmp_path, DEP_STUBS + 'main --status')
+    assert 'needs' not in result.stderr

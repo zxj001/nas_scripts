@@ -908,6 +908,27 @@ def test_mac_docker_desktop_is_manual_until_its_engine_runs(tmp_path, monkeypatc
     assert docker.probe(ctx, task).outcome == "satisfied"
 
 
+@pytest.mark.parametrize("compose", [0, 1])
+def test_mac_never_installs_docker_desktop_over_another_engine(tmp_path, compose):
+    from setup_tasks import docker
+
+    # OrbStack or Colima installed but stopped: the CLI is there, no engine runs.
+    ctx = Fixture(
+        tmp_path,
+        profile="macos",
+        phase="apply",
+        outputs={
+            ("have", "docker"): True,
+            ("docker", "compose", "version"): (compose, ""),
+            ("docker", "info"): (1, "Cannot connect to the Docker daemon"),
+        },
+    )
+    result = docker.probe(ctx, Task("docker", ""))
+    assert result.outcome == "manual"
+    assert ("Start your Docker engine" in result.action) == (compose == 0)
+    assert not any(args[0] == "brew" for args, _ in ctx.calls)
+
+
 def test_chromium_installs_the_debian_package(tmp_path):
     from setup_tasks import browser
 

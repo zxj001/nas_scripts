@@ -67,6 +67,20 @@ def probe(ctx, task):
                 "Docker Desktop is installed but its engine is not running",
                 "Open Docker.app, accept the terms, then rerun --only docker",
             )
+        # Another engine (OrbStack, Colima) owns this docker CLI; never
+        # install Docker Desktop over it.
+        if compose(ctx):
+            return ctx.result(
+                "manual",
+                "a docker CLI is installed but its engine is not running",
+                "Start your Docker engine, then rerun --only docker",
+            )
+        if command(ctx):
+            return ctx.result(
+                "manual",
+                "the installed docker CLI has no Compose plugin",
+                "Add Compose to your Docker engine, then rerun --only docker",
+            )
         return ctx.result("pending")
     if not (ctx.have("dockerd") and compose(ctx) and service(ctx)):
         return ctx.result("pending")

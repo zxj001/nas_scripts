@@ -85,7 +85,9 @@ that install lacks the Compose plugin, setup reports it as manual (install
 
 On macOS, setup installs Docker Desktop (`brew install --cask docker-desktop`). Its
 engine starts only after you open Docker.app and accept the terms, so `--status`
-shows `docker` as manual until then.
+shows `docker` as manual until then. When another engine such as OrbStack or Colima
+already provides a `docker` command, setup never installs Docker Desktop over it; if
+that engine is stopped, `docker` is manual until you start it.
 
 ## Chromium
 

@@ -542,7 +542,7 @@ check_shellfish() {
 }
 default_shellfish() { debian_only; }
 do_shellfish() {
-    local current
+    local current err
     if [ ! -e "$HOME/.shellfishrc" ]; then
         log "in ShellFish on the iPhone: this server's settings -> Install Shell Integration, then rerun"
         log "see docs/08-shellfish-widgets.md"
@@ -557,13 +557,17 @@ do_shellfish() {
         return 1
     fi
     # Keep every existing entry; an unreadable crontab is not an empty one.
-    if ! current="$(crontab -l 2>&1)"; then
-        if [[ "$current" != "no crontab for "* ]]; then
-            echo "cannot read crontab, leaving it alone: $current" >&2
+    # stderr stays out of $current, which is written back as the crontab.
+    err="$(mktemp)"
+    if ! current="$(crontab -l 2>"$err")"; then
+        if ! grep -q '^no crontab for ' "$err"; then
+            echo "cannot read crontab, leaving it alone: $(cat "$err")" >&2
+            rm -f "$err"
             return 1
         fi
         current=""
     fi
+    rm -f "$err"
     if ! grep -qF "$SHELLFISH_WIDGET" <<<"$current"; then
         printf '%s%s\n' "${current:+$current$'\n'}" "$(shellfish_cron_line)" | crontab -
     fi

@@ -588,7 +588,11 @@ main --status --only power-restore
 SHELLFISH_STUBS = r'''
 crontab() {
     case "$1" in
-        -l) if [ -f "$HOME/crontab" ]; then cat "$HOME/crontab"; else echo "no crontab for test" >&2; return 1; fi ;;
+        -l)
+            # Some crontabs warn on stderr and still succeed.
+            echo "crontab: warning on stderr" >&2
+            if [ -f "$HOME/crontab" ]; then cat "$HOME/crontab"; else echo "no crontab for test" >&2; return 1; fi
+            ;;
         -) cat >"$HOME/crontab"; echo write >>"$HOME/crontab-writes" ;;
         *) exit 99 ;;
     esac

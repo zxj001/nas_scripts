@@ -108,7 +108,26 @@ runuser() {
 }
 apt-get() {
     echo "apt-get $*" >>"$F/calls"
+    case "$*" in *xxd*) touch "$F/tools" ;; esac
     return "${APT_RC:-0}"
+}
+# The widget's tools are "installed" by the apt-get stub above.
+shellfish_tools() { [ -f "$F/tools" ]; }
+crontab() {
+    case "$1" in
+        -l)
+            # Some crontabs warn on stderr and still succeed.
+            echo "crontab: warning on stderr" >&2
+            if [ -f "$F/crontab" ]; then cat "$F/crontab"; else echo "no crontab for root" >&2; return 1; fi
+            ;;
+        -) cat >"$F/crontab"; echo "crontab write" >>"$F/calls" ;;
+    esac
+}
+# The widget download: a script that records each send, or a failure.
+curl() {
+    echo "curl $*" >>"$F/calls"
+    [ -z "${CURL_FAIL:-}" ] || return 22
+    printf '#!/bin/sh\necho sent >>"%s/sent"\n' "$F" >"$4"
 }
 # HARNESS_CALL=do_repos runs one function directly, bypassing the runner.
 if [ -n "${HARNESS_CALL:-}" ]; then
@@ -901,5 +920,50 @@ EOF
     diff -r "$F/apt-before" "$F/etc/apt" || fail "direct mixed-suite refusal changed sources"
     [ -z "$(calls)" ] || fail "direct mixed-suite refusal invoked apt"
 done
+
+# ShellFish widget. 1. No Shell Integration yet: manual, guidance only.
+rm -f "$F/calls"
+[ "$(status_of shellfish)" = manual ] || fail "shellfish not manual without .shellfishrc"
+run --yes --only shellfish >"$F/output" || fail "manual shellfish step failed"
+grep -q 'Install Shell Integration' "$F/output" || fail "shellfish guidance missing"
+[ -z "$(calls)" ] || fail "shellfish acted without .shellfishrc: $(calls)"
+
+# 2. A failed download installs nothing and leaves the crontab alone.
+: >"$F/root/.shellfishrc"
+printf '0 3 * * * vzdump\n' >"$F/crontab"
+if CURL_FAIL=1 run --yes --only shellfish >/dev/null 2>&1; then fail "failed widget download accepted"; fi
+[ ! -e "$F/usr/local/bin/shellfish_widget.sh" ] || fail "failed download installed"
+[ "$(cat "$F/crontab")" = '0 3 * * * vzdump' ] || fail "crontab changed after a failed download"
+
+# 3. Installs tools, script and one cron line (keeping vzdump), sends once;
+# a rerun changes nothing.
+rm -f "$F/calls"
+run --yes --only shellfish >/dev/null || fail "shellfish step failed"
+run --yes --only shellfish >/dev/null
+[ -x "$F/usr/local/bin/shellfish_widget.sh" ] || fail "widget script not installed"
+[ "$(sed -n 1p "$F/crontab")" = '0 3 * * * vzdump' ] || fail "existing cron entry lost"
+[ "$(grep -c 'shellfish_widget.sh' "$F/crontab")" = 1 ] || fail "widget cron line not added exactly once"
+! grep -q 'warning on stderr' "$F/crontab" || fail "crontab -l stderr written into the crontab"
+[ "$(grep -c 'crontab write' "$F/calls")" = 1 ] || fail "crontab rewritten on rerun"
+[ "$(grep -c '^curl' "$F/calls")" = 1 ] || fail "widget downloaded again on rerun"
+[ "$(cat "$F/sent")" = sent ] || fail "widget not sent exactly once"
+[ "$(status_of shellfish)" = "done" ] || fail "shellfish not done after setup"
+
+# 4. An unreadable crontab is never overwritten.
+rm -f "$F/crontab" "$F/calls"
+{
+    grep -v '^main "\$@"$' "$HARNESS"
+    cat <<'UNREADABLE'
+crontab() {
+    case "$1" in
+        -l) echo "crontab: permission denied" >&2; return 1 ;;
+        *) touch "$F/overwritten" ;;
+    esac
+}
+main "$@"
+UNREADABLE
+} >"$F/harness-unreadable.sh"
+if bash "$F/harness-unreadable.sh" --yes --only shellfish >/dev/null 2>&1; then fail "unreadable crontab accepted"; fi
+[ ! -e "$F/overwritten" ] || fail "unreadable crontab overwritten"
 
 echo "ok: proxmox_setup.sh behaviour"

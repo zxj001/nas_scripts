@@ -41,6 +41,20 @@ The step:
 Until Shell Integration is installed, the step shows `manual` and only prints the
 iPhone instructions.
 
+On the Proxmox host, use `proxmox_setup.sh --only shellfish` instead. See
+[pve-host.md](pve-host.md#shellfish-widget).
+
+## Several machines
+
+Every machine with Shell Integration sends to the same phone. Without ShellFish Pro there
+is one widget, and the machines replace each other's data on it. With Pro, give each
+widget its own identifier in the app (long-press → **Edit Widget**), then point each
+machine at one with `crontab -e`:
+
+```
+*/15 * * * * /usr/local/bin/shellfish_widget.sh --target pve1 >/dev/null 2>&1
+```
+
 ## By hand
 
 ```
@@ -49,6 +63,7 @@ scripts/shellfish_widget.sh --print             # show the values, send nothing
 scripts/shellfish_widget.sh                     # send them
 scripts/shellfish_widget.sh / /media/Drive1     # one disk entry per mount point
 scripts/shellfish_widget.sh --name NAS          # title instead of the short hostname
+scripts/shellfish_widget.sh --target pve1       # a specific widget (ShellFish Pro)
 ```
 
 To show more disks or change how often it runs, edit the entry with `crontab -e`.
@@ -61,7 +76,7 @@ To show more disks or change how often it runs, edit the entry with `crontab -e`
 | Disk | `df` use% of each mount point, `/` by default |
 
 Temp is left out in a VM, because a VM can't see the host's sensors. For a real reading,
-run the script on bare metal such as `debianbeelink`. See the root
+run the script on bare metal such as `debianbeelink` or the Proxmox host. See the root
 [README](../README.md#temperatures) for more on temperatures.
 
 ## Gotchas

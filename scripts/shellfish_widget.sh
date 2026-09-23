@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
-# shellfish_widget.sh - push CPU, CPU temperature, memory and disk usage to the
-# Secure ShellFish widget on the iPhone (docs/08-shellfish-widgets.md).
+# shellfish_widget.sh - push this machine's name, CPU, CPU temperature, memory
+# and disk usage to the Secure ShellFish widget on the iPhone
+# (docs/08-shellfish-widgets.md). Values are green, orange from 75% (70°C) and
+# red from 90% (85°C). Temp is left out when there is no sensor, as in a VM.
 #
 #   scripts/shellfish_widget.sh                  # disk usage of /
 #   scripts/shellfish_widget.sh / /media/Drive1  # one entry per mount point
+#   scripts/shellfish_widget.sh --name NAS       # title instead of the hostname
 #   scripts/shellfish_widget.sh --print          # show the arguments, send nothing
 #
 # setup-machine --only shellfish runs it from cron. Cron shells do not read
@@ -11,7 +14,7 @@
 set -euo pipefail
 
 usage() {
-    sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 # Busy share of all CPUs over one second, from two /proc/stat samples.
@@ -54,15 +57,37 @@ mem_percent() {
         END { printf "%d%%\n", t ? 100 * (t - a) / t + 0.5 : 0 }' /proc/meminfo
 }
 
+GREEN='#34c759' ORANGE='#ff9f0a' RED='#ff3b30'
+
+# Color for a value such as "83%" or "71°C": green, orange from $2, red from $3.
+level_color() {
+    local n=${1%%[!0-9]*}
+    if [ "${n:-0}" -ge "$3" ]; then echo "$RED"
+    elif [ "${n:-0}" -ge "$2" ]; then echo "$ORANGE"
+    else echo "$GREEN"
+    fi
+}
+
+# icon, colored value, label in the default color
+metric() {
+    printf '%s\n' "$1" "$(level_color "$2" "$4" "$5")" "$2" foreground "$3"
+}
+
 disk_percent() {
     df -P "$1" | awk 'NR == 2 { print $5 }'
 }
 
 main() {
-    local print=0 mounts=() mount label temp
+    local print=0 mounts=() mount label temp name
+    name=$(hostname -s 2>/dev/null || hostname)
     while [ $# -gt 0 ]; do
         case "$1" in
             --print) print=1 ;;
+            --name)
+                [ $# -ge 2 ] || { echo "--name needs a title" >&2; return 2; }
+                name=$2
+                shift
+                ;;
             --help|-h) usage; return 0 ;;
             -*) echo "unknown option: $1" >&2; return 2 ;;
             *) mounts+=("$1") ;;
@@ -71,13 +96,17 @@ main() {
     done
     [ "${#mounts[@]}" -gt 0 ] || mounts=(/)
 
-    local args=(cpu.fill "$(cpu_percent)" CPU)
+    # --text so a name like "100%" or "#1" is never read as progress or color.
+    local args=(server.rack --text "$name")
+    mapfile -t -O "${#args[@]}" args < <(metric cpu.fill "$(cpu_percent)" CPU 75 90)
     temp=$(cpu_temp)
-    args+=(thermometer.medium "${temp:-n/a}" Temp)
-    args+=(memorychip "$(mem_percent)" Mem)
+    if [ -n "$temp" ]; then
+        mapfile -t -O "${#args[@]}" args < <(metric thermometer.medium "$temp" Temp 70 85)
+    fi
+    mapfile -t -O "${#args[@]}" args < <(metric memorychip "$(mem_percent)" Mem 75 90)
     for mount in "${mounts[@]}"; do
         if [ "$mount" = / ]; then label=Disk; else label=${mount##*/}; fi
-        args+=(internaldrive "$(disk_percent "$mount")" "$label")
+        mapfile -t -O "${#args[@]}" args < <(metric internaldrive "$(disk_percent "$mount")" "$label" 75 90)
     done
 
     if [ "$print" = 1 ]; then

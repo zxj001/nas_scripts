@@ -1,5 +1,6 @@
 """Run setup definitions in isolated homes; never install or reload host services."""
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -657,19 +658,37 @@ main --yes --only shellfish
     assert 'n/a' in result.stdout
 
 
+WIDGET = Path(__file__).resolve().parents[1] / 'scripts/shellfish_widget.sh'
+
+
 @pytest.mark.skipif(not Path('/proc/stat').exists(), reason='reads /proc')
 def test_shellfish_widget_print_sends_nothing(tmp_path):
-    script = Path(__file__).resolve().parents[1] / 'scripts/shellfish_widget.sh'
-    result = subprocess.run([str(script), '--print', '/', str(tmp_path)],
+    result = subprocess.run([str(WIDGET), '--print', '--name', 'NAS', '/', str(tmp_path)],
                             env={'PATH': os.environ['PATH'], 'HOME': str(tmp_path)},
                             text=True, capture_output=True)
     assert result.returncode == 0, result.stderr
     words = result.stdout.split()
-    assert words[:2] == ['cpu.fill', words[1]] and words[1].endswith('%')
-    assert words[3] == 'thermometer.medium'
-    assert words[6:9] == ['memorychip', words[7], 'Mem'] and words[7].endswith('%')
-    assert words[9:12] == ['internaldrive', words[10], 'Disk']
-    assert words[12] == 'internaldrive' and words[14] == tmp_path.name
+    assert words[:3] == ['server.rack', '--text', 'NAS']
+    # icon, color, value, foreground, label per metric; Temp only with a sensor
+    color = r'#[0-9a-f]{6}'
+    pattern = (rf'cpu\.fill {color} \d+% foreground CPU '
+               rf'(thermometer\.medium {color} \d+°C foreground Temp )?'
+               rf'memorychip {color} \d+% foreground Mem '
+               rf'internaldrive {color} \d+% foreground Disk '
+               rf'internaldrive {color} \d+% foreground {re.escape(tmp_path.name)}')
+    rest = ' '.join(words[3:])
+    assert re.fullmatch(pattern, rest), rest
+
+
+def test_shellfish_widget_colors_by_level(tmp_path):
+    definitions = WIDGET.read_text().removesuffix('main "$@"\n')
+    result = subprocess.run(['bash', '-c', definitions + r'''
+[ "$(level_color 74% 75 90)" = "$GREEN" ]
+[ "$(level_color 75% 75 90)" = "$ORANGE" ]
+[ "$(level_color 90% 75 90)" = "$RED" ]
+[ "$(level_color 71°C 70 85)" = "$ORANGE" ]
+'''], text=True, capture_output=True)
+    assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.parametrize('missing', ['pip', 'venv'])
@@ -704,7 +723,7 @@ def test_shellfish_widget_tolerates_shellfishrc_unset_variables(tmp_path):
     result = subprocess.run([str(script)], text=True, capture_output=True,
                             env={'PATH': f'{bin_dir}:/usr/bin:/bin', 'HOME': str(tmp_path)})
     assert result.returncode == 0, result.stderr
-    assert (tmp_path / 'sent').read_text().startswith('cpu.fill ')
+    assert (tmp_path / 'sent').read_text().startswith('server.rack --text ')
 
 
 @pytest.mark.parametrize('os_name', ['debian', 'macos'])

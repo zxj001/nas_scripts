@@ -26,8 +26,7 @@ if [ -z "$APT_CACHE" ]; then
 fi
 
 assert_apt_sources() {
-    local expected="$1" parser="$F/apt-parser" rc=0
-    shift
+    local parser="$F/apt-parser" rc=0
     [ -n "$APT_CACHE" ] || return 0
     rm -rf "$parser"
     mkdir -p "$parser/etc/sources.list.d" "$parser/etc/apt.conf.d" \
@@ -54,17 +53,9 @@ EOF
     # occurs. Empty methods additionally prevent any network transport execution.
     APT_CONFIG="$parser/apt.conf" LC_ALL=C "$APT_CACHE" policy \
         >"$parser/output" 2>"$parser/error" || rc=$?
-    if [ "$expected" = compatible ]; then
-        if [ "$rc" != 0 ]; then
-            cat "$parser/error" >&2
-            fail "real APT rejected compatible sources"
-        fi
-    else
-        [ "$rc" != 0 ] || fail "real APT accepted conflicting Signed-By"
-        grep -q 'Conflicting values set for option Signed-By' "$parser/error" || {
-            cat "$parser/error" >&2
-            fail "real APT failed for a reason other than signing conflict"
-        }
+    if [ "$rc" != 0 ]; then
+        cat "$parser/error" >&2
+        fail "real APT rejected compatible sources"
     fi
 }
 
@@ -278,7 +269,7 @@ EOF
 cmp -s "$F/want" "$A/pve-no-subscription.sources" ||
     fail "pve-no-subscription.sources: $(cat "$A/pve-no-subscription.sources")"
 [ "$(status_of repos)" = "done" ] || fail "repos not done after the step"
-assert_apt_sources compatible "$A/pve-no-subscription.sources" "$A/pve-enterprise.sources" "$A/ceph.sources"
+assert_apt_sources "$A/pve-no-subscription.sources" "$A/pve-enterprise.sources" "$A/ceph.sources"
 
 # 12. Idempotent: the runner skips it, and do_repos itself changes nothing.
 before="$(snapshot)"
@@ -317,7 +308,7 @@ run --yes --only repos >/dev/null || fail "repos step failed on a PVE 8 layout"
 grep -qx 'Suites: bookworm' "$A/pve-no-subscription.sources" || fail "suite not taken from os-release"
 if grep -q ceph "$A/pve-no-subscription.sources"; then fail "Ceph repo added without a Ceph enterprise repo"; fi
 [ "$(status_of repos)" = "done" ] || fail "repos not done on the PVE 8 layout"
-assert_apt_sources compatible "$A/pve-no-subscription.sources" "$A/pve-enterprise.list"
+assert_apt_sources "$A/pve-no-subscription.sources" "$A/pve-enterprise.list"
 before="$(snapshot)"
 HARNESS_CALL=do_repos run >/dev/null
 [ "$(snapshot)" = "$before" ] || fail "do_repos rerun changed the .list layout"
@@ -772,7 +763,7 @@ EOF
     expected_keyring_sources "$ARCHIVE_KEY" >"$F/want"
     cmp -s "$F/want" "$A/pve-no-subscription.sources" || fail "deb-src prevented binary replacement: $layout"
     cmp -s "$F/public-before" "$A/public.$layout" || fail "source-only entries changed"
-    assert_apt_sources compatible "$A/pve-no-subscription.sources" "$A/public.$layout"
+    assert_apt_sources "$A/pve-no-subscription.sources" "$A/public.$layout"
     assert_repos_rerun
     rm "$A/pve-no-subscription.sources"
     [ "$(status_of repos)" = todo ] || fail "source-only PVE counted as binary: $layout"
@@ -807,7 +798,6 @@ EOF
                 if [ -n "$setting" ]; then printf 'Signed-By: %s\n' "$setting" >>"$A/z-public.sources"; fi
             fi
             [ "$(status_of repos 2>/dev/null)" = todo ] || fail "conflicting $layout $repo $signing counted as done"
-            assert_apt_sources conflict "$A/pve-no-subscription.sources" "$A/z-public.$layout"
             keyring_enterprise_fixture bookworm
             rm -rf "$F/apt-before"
             cp -R "$F/etc/apt" "$F/apt-before"

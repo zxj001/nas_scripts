@@ -9,6 +9,7 @@ openssl, xxd and curl: without xxd it exits 0 but sends an unreadable payload.
 import os
 import re
 import shlex
+import socket
 import tempfile
 from importlib.resources import files
 
@@ -38,8 +39,36 @@ def ours(path):
     return any(line.startswith(MARK) for line in lines)
 
 
-def cron_line(path):
-    return f"*/15 * * * * {shlex.quote(str(path))} >/dev/null 2>&1"
+def widget_target(ctx):
+    """The widget this machine sends to: --widget-target, else the short
+    hostname. Empty means the one widget every machine shares."""
+    value = ctx.inputs.get("widget_target")
+    if value is None:
+        value = socket.gethostname().split(".")[0]
+    return value
+
+
+def cron_line(path, target=""):
+    option = f" --target {shlex.quote(target)}" if target else ""
+    return f"*/15 * * * * {shlex.quote(str(path))}{option} >/dev/null 2>&1"
+
+
+def runs(line, path):
+    return not line.lstrip().startswith("#") and str(path) in line
+
+
+def untargeted(line, path):
+    # A line the operator already pointed at a widget keeps its target.
+    return runs(line, path) and "--target" not in line.split()
+
+
+def with_target(line, path, target):
+    if not target or not untargeted(line, path):
+        return line
+    quoted = shlex.quote(str(path))
+    word = quoted if quoted in line else str(path)
+    at = line.index(word) + len(word)
+    return line[:at] + " --target " + shlex.quote(target) + line[at:]
 
 
 def read_crontab(ctx):
@@ -85,8 +114,11 @@ def probe(ctx, task):
         return ctx.result("pending", "widget script not installed")
     if not all(ctx.have(tool) for tool in TOOLS):
         return ctx.result("pending", "openssl, xxd, curl or cron is missing")
-    if not any(str(path) in line for line in read_crontab(ctx).splitlines()):
+    lines = read_crontab(ctx).splitlines()
+    if not any(runs(line, path) for line in lines):
         return ctx.result("pending", "no crontab entry runs the widget")
+    if widget_target(ctx) and any(untargeted(line, path) for line in lines):
+        return ctx.result("pending", f"widget line has no --target {widget_target(ctx)}")
     return ctx.result("satisfied")
 
 
@@ -119,8 +151,10 @@ def apply(ctx, task):
         line if line.lstrip().startswith("#") else OLD_PATH.sub(lambda _: quoted, line)
         for line in before.splitlines()
     ]
-    if not any(str(path) in line for line in lines):
-        lines.append(cron_line(path))
+    widget = widget_target(ctx)
+    lines = [with_target(line, path, widget) for line in lines]
+    if not any(runs(line, path) for line in lines):
+        lines.append(cron_line(path, widget))
     others = [line for line in lines if "shellfish_widget.sh" in line and str(path) not in line]
     if others:
         ctx.warnings.append("other crontab lines also run a widget script: " + "; ".join(others))

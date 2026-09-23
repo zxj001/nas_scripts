@@ -82,6 +82,11 @@ def parser():
     )
     cli.add_argument("--ssh-key", help="one public key; may also be supplied in PVE_OPERATOR_KEY")
     cli.add_argument("--lan-route", default="192.168.1.0/24")
+    cli.add_argument(
+        "--widget-target",
+        help="ShellFish Pro widget identifier this machine sends to (default: short "
+        "hostname; '' for the one shared widget)",
+    )
     cli.add_argument("--firstmate-dir", help="FirstMate checkout location (default: ~/firstmate)")
     return cli
 
@@ -126,6 +131,11 @@ def offer_prerequisites(tasks, aliases, selected, only, backend, emit, ask=None)
 def main():
     args = parser().parse_args()
     try:
+        # It lands in a crontab line; identifiers are plain names.
+        if args.widget_target is not None and not re.fullmatch(
+            r"[A-Za-z0-9._-]*", args.widget_target
+        ):
+            raise ValueError("--widget-target takes letters, digits, '.', '_' or '-'")
         profile = (
             args.profile if args.plan and args.profile != "auto" else detect_profile(args.profile)
         )
@@ -185,6 +195,8 @@ def main():
             "firstmate_dir": str(firstmate) if firstmate else "",
             "interactive": "1" if interactive else "0",
         }
+        if args.widget_target is not None:
+            inputs["widget_target"] = args.widget_target
         output = sys.stderr if args.json else sys.stdout
 
         def emit(message):

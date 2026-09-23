@@ -457,29 +457,55 @@ def test_empty_firstmate_dir_is_rejected():
 
 
 def in_terminal(child, reply):
-    """Run child() with a pseudo-terminal as its controlling terminal; answer once."""
+    """Run child() with a pseudo-terminal as its controlling terminal; answer once.
+
+    Bounded by one deadline: a child that never prompts, dies, or never exits
+    fails the test with what it printed instead of hanging it. A closed pty
+    reads as EIO on Linux and as b"" on macOS.
+    """
     import os
     import pty
     import select
+    import time
+    import traceback
 
     pid, master = pty.fork()
     if pid == 0:
         try:
             os._exit(0 if child() else 1)
         except BaseException:
+            os.write(2, traceback.format_exc().encode())
             os._exit(2)
-    seen = b""
-    while b"?" not in seen:
-        # A child that never prompts fails the test instead of hanging it.
-        if not select.select([master], [], [], 10)[0]:
-            os.kill(pid, 9)
-            os.waitpid(pid, 0)
-            raise AssertionError(f"no prompt on the terminal: {seen!r}")
-        seen += os.read(master, 1024)
-    os.write(master, reply)
-    _, status = os.waitpid(pid, 0)
-    os.close(master)
-    return os.waitstatus_to_exitcode(status)
+    deadline = time.monotonic() + 10
+    seen, replied, status = b"", False, None
+    try:
+        while status is None:
+            if not replied and b"?" in seen:
+                os.write(master, reply)
+                replied = True
+            done, code = os.waitpid(pid, os.WNOHANG)
+            if done:
+                status = code
+                break
+            if time.monotonic() > deadline:
+                os.kill(pid, 9)
+                os.waitpid(pid, 0)
+                raise AssertionError(f"terminal child timed out; it printed {seen!r}")
+            if select.select([master], [], [], 0.1)[0]:
+                try:
+                    chunk = os.read(master, 1024)
+                except OSError:
+                    chunk = b""
+                if not chunk:
+                    # Closed: the child exited; collect it.
+                    _, status = os.waitpid(pid, 0)
+                seen += chunk
+    finally:
+        os.close(master)
+    code = os.waitstatus_to_exitcode(status)
+    assert replied, f"child exited {code} without prompting; it printed {seen!r}"
+    assert code == 0, f"child exited {code}; it printed {seen!r}"
+    return code
 
 
 def test_prompts_work_on_a_real_terminal():
@@ -507,3 +533,10 @@ def test_interactive_command_uses_the_terminal():
         return execute(["sh", "-c", script], env=env, interactive=True).returncode == 0
 
     assert in_terminal(child, b"ok\n") == 0
+
+
+@pytest.mark.parametrize("value", ["a b", "x;rm", "$(id)", "a/b"])
+def test_widget_target_must_be_a_plain_name(value):
+    completed = cli("--status", "--only", "shellfish", "--widget-target", value)
+    assert completed.returncode == 2
+    assert "--widget-target takes" in completed.stderr

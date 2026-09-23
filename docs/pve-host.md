@@ -261,7 +261,9 @@ the host. It shows `pve1` with a real CPU temperature, which a VM can't read.
 
    It installs `openssl`, `xxd`, `curl` and `cron` if any are missing, copies the widget
    script from the setup bundle to `/usr/local/bin/shellfish_widget.sh`, adds a 15-minute
-   entry to root's crontab (keeping the existing entries) and sends the first update.
+   entry to root's crontab (keeping the existing entries) and sends the first update to
+   the widget with identifier `pve1` (the hostname; ShellFish Pro, see
+   [Several machines](08-shellfish-widgets.md#several-machines)).
    Packages need the enterprise repositories off, so `--only shellfish` offers `repos`
    first if it isn't done.
 

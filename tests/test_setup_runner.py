@@ -454,3 +454,56 @@ def test_empty_firstmate_dir_is_rejected():
         pytest.skip("not a Debian 13 host")
     assert completed.returncode == 2
     assert "--firstmate-dir needs a checkout path" in completed.stderr
+
+
+def in_terminal(child, reply):
+    """Run child() with a pseudo-terminal as its controlling terminal; answer once."""
+    import os
+    import pty
+    import select
+
+    pid, master = pty.fork()
+    if pid == 0:
+        try:
+            os._exit(0 if child() else 1)
+        except BaseException:
+            os._exit(2)
+    seen = b""
+    while b"?" not in seen:
+        # A child that never prompts fails the test instead of hanging it.
+        if not select.select([master], [], [], 10)[0]:
+            os.kill(pid, 9)
+            os.waitpid(pid, 0)
+            raise AssertionError(f"no prompt on the terminal: {seen!r}")
+        seen += os.read(master, 1024)
+    os.write(master, reply)
+    _, status = os.waitpid(pid, 0)
+    os.close(master)
+    return os.waitstatus_to_exitcode(status)
+
+
+def test_prompts_work_on_a_real_terminal():
+    # A tty is not seekable; text-mode "r+" failed on every real terminal, so
+    # every interactive run reported "no terminal".
+    from setup_core.commands import terminal
+
+    def child():
+        with terminal() as stream:
+            stream.write("Run it? ")
+            return stream.readline().strip() == "yes"
+
+    assert in_terminal(child, b"yes\n") == 0
+
+
+def test_interactive_command_uses_the_terminal():
+    import os
+
+    from setup_core.commands import execute
+
+    def child():
+        os.write(1, b"Name?\n")  # fd 1 is the terminal; pytest captures sys.stdout
+        script = 'read x; [ "$x" = ok ]'
+        env = {"PATH": os.environ["PATH"]}
+        return execute(["sh", "-c", script], env=env, interactive=True).returncode == 0
+
+    assert in_terminal(child, b"ok\n") == 0

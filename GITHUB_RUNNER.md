@@ -48,15 +48,68 @@ runner ~0.7 GB, logs and apt cache). Building a web app adds ~5-12 GB: the check
 `node_modules`, the npm cache, Node from `setup-node`, Playwright browsers, Docker images
 (`node:22` alone is ~1.1 GB) and Docker build cache. 40 GB leaves room for peaks, such as
 two tool versions during an upgrade, before cleanup's 80% limit (32 GB). 25 GB is a
-workable minimum. For a new runner VM in Proxmox:
+workable minimum.
 
-1. Clone the Debian template, or install Debian 13 ([docs/01-debian-install.md](docs/01-debian-install.md))
-   **without a desktop**: in software selection tick only *SSH server* and *standard
-   system utilities*. A runner needs no GUI, and `install` makes sure SSH is running.
-2. Give it a unique hostname: it becomes the runner name, and registration fails if the
-   name is taken, so a clone that kept the template's hostname cannot take over another
-   runner. `sudo hostnamectl set-hostname gh-runner-3`
-3. Set up the runner as below.
+## Create a runner VM on Proxmox
+
+On `pve1`, as root, `scripts/proxmox_gh_runner.sh` does the whole thing in one command:
+it clones a Debian 13 cloud-image template into a new VM, sizes it, names it (the VM
+name becomes the hostname and the runner name), boots it, and runs `ghrunner_setup.sh
+install` inside it through the QEMU guest agent. The VM needs no SSH access for this,
+and the token is passed on stdin, so it is never written to a file or shown in `ps`.
+
+```sh
+# from a checkout on pve1 (it then uses the checkout's ghrunner_setup.sh), or download it
+curl -fsSLO https://raw.githubusercontent.com/zxj001/nas_scripts/main/scripts/proxmox_gh_runner.sh
+bash proxmox_gh_runner.sh create --name gh-runner-1                 # asks for the token
+bash proxmox_gh_runner.sh create --name gh-runner-2 --cores 4 --memory 8192 --disk 80 --labels heavy
+bash proxmox_gh_runner.sh list                                      # runner VMs and their checks
+bash proxmox_gh_runner.sh check --name gh-runner-1
+bash proxmox_gh_runner.sh destroy --name gh-runner-1                # unregister, then delete the VM
+```
+
+| Option | Default | Notes |
+|--------|---------|-------|
+| `--name` | - | Required. Lowercase letters, digits and `-`; unique in the org. |
+| `--token` | asked for | Registration token for `create`, removal token for `destroy`; also `$GHRUNNER_TOKEN`. |
+| `--cores` / `--memory` / `--disk` | 2 / 4096 MB / 40 GB | The disk is thin provisioned. |
+| `--labels` | - | Extra runner labels, e.g. `heavy` for big builds. |
+| `--storage` / `--bridge` | `local-lvm` / `vmbr0` | Where the disks go and which network the VM joins. |
+| `--ssh-keys` | `/root/.ssh/authorized_keys` | Required: public keys for the VM's `debian` user, the only way to log in (SSH key, no password). |
+| `--template-id` | 9100 | The template VM, built on first `create` (or with `template`). |
+| `--rebuild` | - | With `template`: replace the template with one from the current Debian image. |
+| `--yes` | - | `destroy` without typing the name to confirm. |
+
+- **The OS:** nothing is installed. Every VM is a full clone of template VM 9100, whose
+  disk is Debian 13's official cloud image (`debian-13-genericcloud-amd64.qcow2` from
+  cloud.debian.org, checked against its `SHA512SUMS`): Debian already installed, ready for
+  cloud-init: a headless server with the SSH server, no desktop. On first boot cloud-init
+  sets the hostname, network and SSH keys and installs the guest agent. The template is a snapshot of the image on the day it was
+  built; `template --rebuild` refreshes it for later VMs. Existing VMs are unaffected, and
+  runner setup updates packages in each VM anyway.
+- **Prerequisites** are set up as needed: `curl` on the host if missing, and the
+  `snippets` content type on the `local` storage (cloud-init's vendor snippet that
+  installs the guest agent lives there). Inside the VM, `ghrunner_setup.sh` installs its own.
+- **Safe to rerun**, including after an interrupted run:
+  - a half-built template is removed and built again;
+  - a clone interrupted before it was configured is finished;
+  - a stopped VM is started, and its runner set up or, if it already is, just checked;
+  - on an existing VM only the `--cores`/`--memory`/`--disk` given are applied (CPU and
+    memory at the next reboot), and a disk only grows.
+- **Only its own VMs:** runner VMs are tagged `gh-runner` and the template
+  `gh-runner-template`. Any other VM (a name clash, a foreign VM at the template ID,
+  two VMs with the same name) stops the script rather than being changed or deleted.
+- **Destroy:** it unregisters the runner from GitHub first (removal token from the
+  runner's **...** menu > **Remove**). A stopped VM is deleted without unregistering, so
+  remove the runner on GitHub yourself.
+- **Output:** the guest agent returns output when a command finishes, so the runner
+  install is quiet for a few minutes, then prints everything at once.
+
+Other hypervisors, or a VM made by hand: install Debian 13 (see
+[docs/01-debian-install.md](docs/01-debian-install.md)) **without a desktop**, ticking
+only *SSH server* and *standard system utilities*, give it a unique hostname
+(`sudo hostnamectl set-hostname gh-runner-3`), since it becomes the runner name and
+registration fails if the name is taken, then set up the runner as below.
 
 ## Set up a runner
 

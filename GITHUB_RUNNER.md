@@ -40,13 +40,55 @@ runner ~0.7 GB, logs and apt cache). Building a web app adds ~5-12 GB: the check
 `node_modules`, the npm cache, Node from `setup-node`, Playwright browsers, Docker images
 (`node:22` alone is ~1.1 GB) and Docker build cache. 40 GB leaves room for peaks, such as
 two tool versions during an upgrade, before cleanup's 80% limit (32 GB). 25 GB is a
-workable minimum. For a new runner VM in Proxmox:
+workable minimum.
 
-1. Clone the Debian template (or install Debian, [docs/01-debian-install.md](docs/01-debian-install.md)).
-2. Give it a unique hostname: it becomes the runner name, and registration fails if the
-   name is taken, so a clone that kept the template's hostname cannot take over another
-   runner. `sudo hostnamectl set-hostname gh-runner-3`
-3. Set up the runner as below.
+## Create a runner VM on Proxmox
+
+On `pve1`, as root, `scripts/proxmox_gh_runner.sh` does the whole thing in one command:
+it clones a Debian 13 cloud-image template into a new VM, sizes it, names it (the VM
+name becomes the hostname and the runner name), boots it, and runs `ghrunner_setup.sh
+install` inside it through the QEMU guest agent. The VM needs no SSH access for this,
+and the token is passed on stdin, so it is never written to a file or shown in `ps`.
+
+```sh
+# from a checkout on pve1 (it then uses the checkout's ghrunner_setup.sh), or download it
+curl -fsSLO https://raw.githubusercontent.com/zxj001/nas_scripts/main/scripts/proxmox_gh_runner.sh
+bash proxmox_gh_runner.sh create --name gh-runner-1                 # asks for the token
+bash proxmox_gh_runner.sh create --name gh-runner-2 --cores 4 --memory 8192 --disk 80 --labels heavy
+bash proxmox_gh_runner.sh list                                      # runner VMs and their checks
+bash proxmox_gh_runner.sh check --name gh-runner-1
+bash proxmox_gh_runner.sh destroy --name gh-runner-1                # unregister, then delete the VM
+```
+
+| Option | Default | Notes |
+|--------|---------|-------|
+| `--name` | - | Required. Lowercase letters, digits and `-`; unique in the org. |
+| `--token` | asked for | Registration token for `create`, removal token for `destroy`; also `$GHRUNNER_TOKEN`. |
+| `--cores` / `--memory` / `--disk` | 2 / 4096 MB / 40 GB | The disk is thin provisioned. |
+| `--labels` | - | Extra runner labels, e.g. `heavy` for big builds. |
+| `--storage` / `--bridge` | `local-lvm` / `vmbr0` | Where the disks go and which network the VM joins. |
+| `--ssh-keys` | `/root/.ssh/authorized_keys` | Public keys for the VM's `debian` user, for SSH when debugging. |
+| `--template-id` | 9100 | The template VM, built on first `create` (or with `template`). |
+| `--yes` | - | `destroy` without typing the name to confirm. |
+
+- **Template:** built once from Debian's `genericcloud` image, checked against its
+  `SHA512SUMS`, as VM 9100 tagged `gh-runner-template`. Delete it and the next `create`
+  builds a fresh one from the current image.
+- **Snippets:** first boot installs the guest agent through a cloud-init vendor snippet, so
+  a storage must allow the `snippets` content type. If none does, the script stops and
+  prints the `pvesm set local --content ...,snippets` command to run once.
+- **Safe to rerun:** `create` on an existing VM starts it if needed and sets up or just
+  checks its runner. Runner VMs are tagged `gh-runner`; `list` and `destroy` touch no other VM.
+- **Destroy:** it unregisters the runner from GitHub first (removal token from the
+  runner's **...** menu > **Remove**). A stopped VM is deleted without unregistering, so
+  remove the runner on GitHub yourself.
+- **Output:** the guest agent returns output when a command finishes, so the runner
+  install is quiet for a few minutes, then prints everything at once.
+
+Other hypervisors, or a VM made by hand: install Debian (see
+[docs/01-debian-install.md](docs/01-debian-install.md)), give it a unique hostname
+(`sudo hostnamectl set-hostname gh-runner-3`), since it becomes the runner name and
+registration fails if the name is taken, then set up the runner as below.
 
 ## Set up a runner
 

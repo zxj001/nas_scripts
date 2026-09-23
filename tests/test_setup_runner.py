@@ -6,7 +6,7 @@ import pytest
 
 from setup_core.backend import Backend
 from setup_core.context import environment
-from setup_core.model import Result, Task, select, validate
+from setup_core.model import Result, Task, missing_providers, select, validate
 from setup_core.runner import Runner
 from setup_core.state import Journal, apply_lock
 
@@ -319,3 +319,90 @@ def test_controller_reports_missing_or_malformed_worker_result(tmp_path, monkeyp
     monkeypatch.setattr(backend_module.subprocess, "Popen", Process)
     backend = Backend("debian", tmp_path, "fixture", environment(tmp_path, {}), {})
     assert backend.call("directories", "probe").outcome == "failed"
+
+
+def test_missing_providers_are_transitive_and_skip_available_or_selected():
+    tasks = [
+        Task("sudo", "", provides=("admin",)),
+        Task("git", "", needs=("admin",), provides=("git",)),
+        Task("node", "", provides=("node",)),
+        Task("pi", "", needs=("node",)),
+        Task("firstmate", "", needs=("git",)),
+    ]
+    selected = select(tasks, {}, "pi,firstmate")
+    asked = []
+
+    def available(capability, provider):
+        asked.append(capability)
+        return capability == "node"
+
+    assert missing_providers(tasks, selected, available) == [
+        ("firstmate", "git", "git"),
+        ("git", "admin", "sudo"),
+    ]
+    assert asked == ["node", "git", "admin"]
+    # Already selected providers are never offered.
+    selected = select(tasks, {}, "firstmate,git")
+    assert missing_providers(tasks, selected, lambda c, p: False) == [("git", "admin", "sudo")]
+
+
+def offer_tasks():
+    return [
+        Task("sudo", "", provides=("admin",)),
+        Task("git", "", needs=("admin",), provides=("git",)),
+        Task("node", "", provides=("node",)),
+        Task("pi", "", needs=("node",)),
+        Task("firstmate", "", needs=("git",)),
+    ]
+
+
+def offer(only, backend, replies=None):
+    from setup_core.cli import offer_prerequisites
+
+    tasks = offer_tasks()
+    output, asked = [], []
+
+    def ask(provider):
+        asked.append(provider)
+        return replies.pop(0)
+
+    selected, added = offer_prerequisites(
+        tasks, {}, select(tasks, {}, only), only, backend, output.append,
+        ask if replies is not None else None,
+    )
+    return [t.id for t in selected], added, output, asked
+
+
+def test_only_offers_missing_prerequisites_and_adds_accepted_ones():
+    backend = FakeBackend(probes={"sudo": Result("sudo", "pending")})
+    selected, added, output, asked = offer("pi,firstmate", backend, ["", "y", ""])
+    assert asked == ["node", "git", "sudo"]
+    assert added == ["node", "git", "sudo"]
+    assert selected == ["sudo", "git", "node", "pi", "firstmate"]
+    assert "pi needs node, which is not available; node provides it" in output
+
+
+def test_declined_prerequisite_drops_what_only_it_needed():
+    backend = FakeBackend(probes={"sudo": Result("sudo", "pending")})
+    selected, added, output, asked = offer("firstmate", backend, ["n"])
+    assert asked == ["git"] and added == [] and selected == ["firstmate"]
+    assert not any("sudo" in line for line in output)
+
+
+def test_prerequisites_of_done_tasks_and_done_providers_are_not_offered():
+    # pi is already installed; sudo is done though admin has no cached login.
+    backend = FakeBackend(
+        probes={"pi": Result("pi", "satisfied"), "sudo": Result("sudo", "satisfied")}
+    )
+    selected, added, output, asked = offer("pi,git", backend, [])
+    assert output == [] and asked == [] and selected == ["git", "pi"]
+
+
+def test_noninteractive_only_names_prerequisites_and_stays_literal():
+    backend = FakeBackend(probes={"sudo": Result("sudo", "pending")})
+    selected, added, output, asked = offer("pi", backend)
+    assert selected == ["pi"] and added == []
+    assert output == [
+        "pi needs node, which is not available; node provides it",
+        "Add --with-deps to include them",
+    ]

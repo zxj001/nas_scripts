@@ -10,7 +10,7 @@ Proxmox guest.
 ## Or run the setup script
 
 After the Debian install in [01-debian-install.md](01-debian-install.md), which is still
-manual (VM creation, the installer itself), one command does steps 2-7 on Debian 13 or macOS:
+manual (VM creation, the installer itself), one command does steps 2-8 on Debian 13 or macOS:
 
 Run from a checkout (Python 3.11+; the apply wrapper offers a runtime installation
 on supported machines when needed):
@@ -54,15 +54,25 @@ A minimal Debian install needs `curl` and `ca-certificates` to run that download
 command. Local checkout setup installs them through its dependency provider.
 The steps below describe the corresponding manual operations.
 
+`--only a,b` runs just those tasks. It names every prerequisite of a selected task
+that is not available yet (for example `node` for `pi`) and, when run from a terminal,
+asks whether to add each one. `--with-deps` adds them all without asking; with `--yes`
+and no `--with-deps`, they are only named.
+
+For the ShellFish Home Screen widget (name, CPU, temperature, memory, disk), install Shell
+Integration from the iPhone app first, then run `--only shellfish`. See
+[ShellFish widgets](08-shellfish-widgets.md).
+
 | # | Step | Doc |
 |---|------|-----|
 | 1 | Create the VM **(VM)**, install Debian + XFCE, fix sudo | [01-debian-install.md](01-debian-install.md) |
 | 2 | Update, guest agent **(VM)**, disable sleep, snapshot **(VM)** | [02-post-install.md](02-post-install.md) |
 | 3 | SSH server, keys, hardening | [03-ssh.md](03-ssh.md) |
 | 4 | Tailscale + iPhone access | [04-tailscale.md](04-tailscale.md) |
-| 5 | git, gh, Node 22 via nvm | [05-dev-tools.md](05-dev-tools.md) |
+| 5 | git, Python + pip, gh, Node 22 via nvm | [05-dev-tools.md](05-dev-tools.md) |
 | 6 | Codex, Pi, Claude Code, FirstMate | [06-agent-clis.md](06-agent-clis.md) |
 | 7 | Herdr for persistent agent sessions | [07-herdr.md](07-herdr.md) |
+| 8 | ShellFish widget: CPU, temp, memory, disk on the iPhone | [08-shellfish-widgets.md](08-shellfish-widgets.md) |
 | - | Optional: pass the GT 1030 through to the VM **(VM)** | [gpu-passthrough.md](gpu-passthrough.md) |
 | - | SSH and Tailscale on the Proxmox host itself **(host)** | [pve-host.md](pve-host.md) |
 
@@ -76,6 +86,8 @@ When you're done, add the machine to [Local Machines](../README.md#local-machine
 - [ ] Key-based SSH works; password auth refused
 - [ ] `tailscale status` shows the machine; SSH works from the iPhone on cellular
 - [ ] `gh auth status` is logged in; `node --version` is 22.19.0 or newer
+- [ ] `python3 -m pip --version` works and `python3 -m venv` creates a venv
 - [ ] `codex`, `pi` and `claude` start and are signed in
 - [ ] `herdr` detaches and reattaches with panes still running
+- [ ] ShellFish widget on the iPhone shows CPU, Temp, Mem and Disk
 - [ ] **(VM)** Snapshot `clean-xfce-base` taken

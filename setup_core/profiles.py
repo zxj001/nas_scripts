@@ -7,6 +7,9 @@ def registry(profile):
     linux = profile in {"debian", "proxmox"}
     admin = ("admin",) if linux else ("brew",)
     package = ("admin", "packages") if linux else ("brew",)
+    if profile == "proxmox":
+        # Every apt update fails with 401 until the enterprise repos are off.
+        package += ("apt-repos",)
     tasks = []
 
     def add(name, module, needs=(), provides=(), resources=(), default=True, interactive=False):
@@ -19,6 +22,8 @@ def registry(profile):
         add("upgrade", "system", ("admin", "packages"), resources=("packages",))
         add("guest-agent", "system", package, resources=("packages", "services"))
         add("no-sleep", "system", ("admin",), resources=("services",))
+    if profile == "proxmox":
+        add("repos", "repos", ("admin",), ("apt-repos",), ("packages",))
     if profile != "proxmox":
         add("power-restore", "power", ("admin",), default=False)
     # Small shared capability providers, also available with --with-deps.
@@ -33,6 +38,7 @@ def registry(profile):
         add("git", "packages", package, ("git",), ("packages",))
         add("build-tools", "packages", package, resources=("packages",))
         add("dev-utilities", "packages", package, resources=("packages",))
+        add("python", "packages", package, resources=("packages",))
         add("directories", "packages")
         add("setup-command", "launcher")
     if linux:
@@ -80,6 +86,9 @@ def registry(profile):
         add("firstmate", "repository", ("git",))
         if profile == "debian":
             add("gpu", "gpu", package, resources=("packages",))
+    if linux:
+        # Manual until the iPhone app installs Shell Integration.
+        add("shellfish", "shellfish", package, resources=("packages",))
     aliases = {"tailscale": ("tailscale.install", "tailscale.login")}
     if profile != "proxmox":
         aliases.update(
@@ -89,6 +98,7 @@ def registry(profile):
                     "git",
                     "build-tools",
                     "dev-utilities",
+                    "python",
                     "directories",
                 ),
                 "herdr": ("herdr.install", "herdr.integration"),

@@ -118,3 +118,31 @@ def select(tasks, aliases, only=None, with_deps=False):
         if task.id in selected:
             order(task.id)
     return ordered
+
+
+def missing_providers(tasks, selected, available):
+    """Unavailable prerequisites of a selection, for offering them.
+
+    Returns (consumer, capability, provider) for each capability a selected
+    task needs whose provider is not selected and which
+    available(capability, provider) reports missing, then the same for those
+    providers, in the order found.
+    """
+    providers = validate(tasks)
+    by_id = {t.id: t for t in tasks}
+    chosen = {t.id for t in selected}
+    checked, found, queue = {}, [], list(selected)
+    while queue:
+        task = queue.pop(0)
+        for capability in task.needs:
+            provider = providers.get(capability)
+            if not provider or provider in chosen:
+                continue
+            if capability not in checked:
+                checked[capability] = available(capability, provider)
+            if checked[capability]:
+                continue
+            chosen.add(provider)
+            found.append((task.id, capability, provider))
+            queue.append(by_id[provider])
+    return found

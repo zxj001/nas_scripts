@@ -1,5 +1,7 @@
 """Task/file contracts use controlled command responses and fixture-only paths."""
 
+import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -10,7 +12,7 @@ from setup_core.commands import CommandError, Output, redact
 from setup_core.context import Context
 from setup_core.files import PROGRAM, Change, ManualConfig, append_once
 from setup_core.model import Task
-from setup_tasks import node, power, repository, ssh, tailscale
+from setup_tasks import node, packages, power, repos, repository, shellfish, ssh, tailscale
 
 
 class Fixture(Context):
@@ -212,9 +214,13 @@ def test_nvm_incomplete_directory_is_preserved(tmp_path):
     assert (nvm / "keep").read_text() == "operator data" and ctx.calls == []
 
 
-def test_firstmate_worktree_and_conflicting_path_are_preserved(tmp_path):
+@pytest.mark.parametrize("custom", [False, True])
+def test_firstmate_worktree_and_conflicting_path_are_preserved(tmp_path, custom):
     ctx = Fixture(tmp_path)
-    target = ctx.home / "tools/firstmate"
+    target = ctx.home / "firstmate"
+    if custom:
+        target = tmp_path / "custom tools/firstmate"
+        ctx.inputs["firstmate_dir"] = str(target)
     target.mkdir(parents=True)
     assert repository.probe(ctx, Task("firstmate", "")).outcome == "manual"
     (target / ".git").write_text("gitdir: somewhere")
@@ -372,3 +378,189 @@ def test_herdr_integration_verifies_current_and_preserves_custom_settings(tmp_pa
     assert apps.apply(ctx, task).outcome == "manual"
     assert settings.read_text() == '{"hooks": {"custom": true}}'
     assert all("install" not in args for args, _ in ctx.calls)
+
+
+def test_firstmate_clones_into_custom_directory(tmp_path):
+    target = tmp_path / "custom tools/firstmate"
+    ctx = Fixture(
+        tmp_path,
+        phase="apply",
+        outputs={("git", "clone", "https://github.com/kunchenguid/firstmate", str(target)): (0, "")},
+    )
+    ctx.inputs["firstmate_dir"] = str(target)
+    assert repository.apply(ctx, Task("firstmate", "")).outcome == "changed"
+    assert target.parent.is_dir()
+
+
+@pytest.mark.parametrize("missing", [None, "pip", "venv"])
+def test_python_needs_pip_and_venv_on_debian(tmp_path, missing):
+    ctx = Fixture(
+        tmp_path,
+        outputs={
+            ("have", "python3"): True,
+            ("python3", "-m", "pip", "--version"): (1 if missing == "pip" else 0, ""),
+            ("python3", "-c", "import ensurepip, venv"): (1 if missing == "venv" else 0, ""),
+        },
+    )
+    outcome = packages.probe(ctx, Task("python", "")).outcome
+    assert outcome == ("satisfied" if missing is None else "pending")
+
+
+def test_repos_task_maps_the_adapter_exit_code(tmp_path, monkeypatch):
+    codes = {"probe": 1}
+    monkeypatch.setattr(repos, "adapter", lambda ctx, op, allowed=(0,): Output(codes[op], ""))
+    ctx = Fixture(tmp_path, profile="proxmox")
+    assert repos.probe(ctx, Task("repos", "")).outcome == "pending"
+    codes["probe"] = 0
+    assert repos.probe(ctx, Task("repos", "")).outcome == "satisfied"
+
+
+def shellfish_fixture(tmp_path, *, tools=True, crontab=(1, "no crontab for fixture"), profile="debian"):
+    outputs = {("have", t): tools for t in shellfish.TOOLS}
+    outputs[("crontab", "-l")] = crontab
+    ctx = Fixture(tmp_path, profile=profile, phase="apply", outputs=outputs)
+    written = []
+
+    def install_crontab(args):
+        written.append(Path(args[1]).read_text())
+        ctx.outputs[("crontab", "-l")] = (0, written[-1])
+        return Output(0, "")
+
+    base = ctx.run
+
+    def run(*args, **kwargs):
+        args = tuple(map(str, args))
+        if args[0] == "crontab" and args[1] != "-l":
+            ctx.calls.append((args, kwargs))
+            return install_crontab(args)
+        if args == (str(shellfish.target(ctx)),):
+            ctx.calls.append((args, kwargs))
+            return Output(0, "")
+        return base(*args, **kwargs)
+
+    ctx.run = run
+    return ctx, written
+
+
+def test_shellfish_is_manual_without_shell_integration(tmp_path):
+    ctx, written = shellfish_fixture(tmp_path)
+    result = shellfish.probe(ctx, Task("shellfish", ""))
+    assert result.outcome == "manual" and "Install Shell Integration" in result.action
+    assert shellfish.apply(ctx, Task("shellfish", "")).outcome == "manual"
+    assert written == [] and ctx.calls == []
+
+
+def test_shellfish_not_applicable_on_macos(tmp_path):
+    ctx, _ = shellfish_fixture(tmp_path, profile="macos")
+    assert shellfish.probe(ctx, Task("shellfish", "")).outcome == "not-applicable"
+
+
+def test_shellfish_installs_keeps_crontab_migrates_old_line_and_repeats(tmp_path):
+    old = "*/15 * * * * /home/fixture/tools/nas_scripts/scripts/shellfish_widget.sh >/dev/null 2>&1"
+    ctx, written = shellfish_fixture(tmp_path, crontab=(0, "0 3 * * * backup\n" + old + "\n"))
+    (ctx.home / ".shellfishrc").write_text("")
+    task = Task("shellfish", "")
+    assert shellfish.probe(ctx, task).outcome == "pending"
+    assert shellfish.apply(ctx, task).outcome == "changed"
+    path = shellfish.target(ctx)
+    assert path.read_text() == shellfish.bundled() and os.access(path, os.X_OK)
+    assert written[-1].splitlines() == ["0 3 * * * backup", shellfish.cron_line(path)]
+    assert shellfish.probe(ctx, task).outcome == "satisfied"
+    assert shellfish.apply(ctx, task).outcome == "satisfied"
+    assert len(written) == 1
+    assert sum(1 for args, _ in ctx.calls if args == (str(path),)) == 1
+
+
+def test_shellfish_proxmox_installs_to_usr_local_bin(tmp_path):
+    ctx, written = shellfish_fixture(tmp_path, profile="proxmox")
+    (ctx.home / ".shellfishrc").write_text("")
+    assert shellfish.apply(ctx, Task("shellfish", "")).outcome == "changed"
+    assert shellfish.target(ctx) == tmp_path / "usr/local/bin/shellfish_widget.sh"
+    assert shellfish.target(ctx).is_file()
+
+
+def test_shellfish_installs_missing_tools_with_apt(tmp_path):
+    ctx, _ = shellfish_fixture(tmp_path, tools=False)
+    (ctx.home / ".shellfishrc").write_text("")
+    install = ("apt-get", "-o", "Dpkg::Options::=--force-confold", "install", "--no-remove", "-y",
+               "openssl", "xxd", "curl", "cron")
+    ctx.outputs[("apt-get", "update")] = (0, "")
+    ctx.outputs[install] = (0, "")
+    shellfish.apply(ctx, Task("shellfish", ""))
+    assert any(args == install for args, _ in ctx.calls)
+
+
+def test_shellfish_unreadable_crontab_is_never_overwritten(tmp_path):
+    ctx, written = shellfish_fixture(tmp_path, crontab=(1, "crontab: permission denied"))
+    (ctx.home / ".shellfishrc").write_text("")
+    with pytest.raises(RuntimeError, match="cannot read crontab"):
+        shellfish.apply(ctx, Task("shellfish", ""))
+    assert written == []
+
+
+def test_shellfish_operator_script_at_target_is_preserved(tmp_path):
+    ctx, written = shellfish_fixture(tmp_path)
+    (ctx.home / ".shellfishrc").write_text("")
+    path = shellfish.target(ctx)
+    path.parent.mkdir(parents=True)
+    path.write_text("#!/bin/sh\necho mine\n")
+    assert shellfish.apply(ctx, Task("shellfish", "")).outcome == "manual"
+    assert path.read_text() == "#!/bin/sh\necho mine\n" and written == []
+
+
+@pytest.mark.parametrize("script_dir", ["setup_adapters", "scripts"])
+def test_shellfish_widget_tolerates_shellfishrc_unset_variables(tmp_path, script_dir):
+    # The real file reads $TMUX and friends, which cron leaves unset.
+    if not Path("/proc/stat").exists():
+        pytest.skip("reads /proc")
+    (tmp_path / ".shellfishrc").write_text(
+        'if [[ -n "$TMUX" ]]; then :; fi\nfalse\nwidget() { echo "$*" >"$HOME/sent"; }\n'
+    )
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for tool in ("openssl", "xxd", "curl"):
+        (bin_dir / tool).write_text("#!/bin/sh\n")
+        (bin_dir / tool).chmod(0o755)
+    script = Path(__file__).resolve().parents[1] / script_dir / "shellfish_widget.sh"
+    result = subprocess.run(
+        [str(script), "--name", "NAS"],
+        text=True,
+        capture_output=True,
+        env={"PATH": f"{bin_dir}:/usr/bin:/bin", "HOME": str(tmp_path)},
+    )
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "sent").read_text().startswith("server.rack --text NAS ")
+
+
+def test_shellfish_widget_print_layout_and_colors(tmp_path):
+    if not Path("/proc/stat").exists():
+        pytest.skip("reads /proc")
+    script = Path(__file__).resolve().parents[1] / "setup_adapters/shellfish_widget.sh"
+    result = subprocess.run(
+        [str(script), "--print", "--target", "pve1", "--name", "NAS", "/", str(tmp_path)],
+        env={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)},
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == 0, result.stderr
+    color = r"#[0-9a-f]{6}"
+    pattern = (
+        rf"--target pve1 server\.rack --text NAS cpu\.fill {color} \d+% foreground CPU "
+        rf"(thermometer\.medium {color} \d+°C foreground Temp )?"
+        rf"memorychip {color} \d+% foreground Mem "
+        rf"internaldrive {color} \d+% foreground Disk "
+        rf"internaldrive {color} \d+% foreground {re.escape(tmp_path.name)}"
+    )
+    assert re.fullmatch(pattern, result.stdout.strip()), result.stdout
+    definitions = script.read_text().removesuffix('main "$@"\n')
+    levels = subprocess.run(
+        ["bash", "-c", definitions + """
+[ "$(level_color 74% 75 90)" = "$GREEN" ]
+[ "$(level_color 75% 75 90)" = "$ORANGE" ]
+[ "$(level_color 90% 75 90)" = "$RED" ]
+[ "$(level_color 71°C 70 85)" = "$ORANGE" ]
+"""],
+        text=True,
+        capture_output=True,
+    )
+    assert levels.returncode == 0, levels.stderr

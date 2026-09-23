@@ -30,6 +30,10 @@ def available(ctx, name):
         from setup_tasks.ssh_keys import valid_operator
 
         return valid_operator(ctx)
+    if name == "apt-repos":
+        from setup_tasks.repos import configured
+
+        return configured(ctx)
     if name == "tailnet":
         return ctx.have("tailscale") and ctx.test("tailscale", "status")
     if name in {"git", "brew", "tailscale", "claude", "herdr"}:

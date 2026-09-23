@@ -1,0 +1,1 @@
+../setup_adapters/shellfish_widget.sh

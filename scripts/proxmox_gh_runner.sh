@@ -11,13 +11,19 @@
 #   scripts/proxmox_gh_runner.sh list                  # runner VMs and their checks
 #   scripts/proxmox_gh_runner.sh check --name gh-runner-1
 #   scripts/proxmox_gh_runner.sh destroy --name gh-runner-1   # unregister, delete VM
-#   scripts/proxmox_gh_runner.sh template              # build the template only
+#   scripts/proxmox_gh_runner.sh template [--rebuild]  # build (or rebuild) the template
 #
-# create is safe to rerun: an existing VM is started if needed and its runner
-# set up or checked. The template (VM 9100, built on first use) comes from
-# Debian's genericcloud image, checked against its SHA512SUMS. It needs a
-# storage with the `snippets` content type (for the cloud-init that installs
-# the guest agent); the script says how to enable it on `local` if none has.
+# Every command is safe to rerun. create picks up where an interrupted run
+# stopped (a half-built template is rebuilt, a half-configured clone is
+# finished), starts a stopped VM, and sets up or just checks its runner; on an
+# existing VM only the --cores/--memory/--disk you pass are applied, and disks
+# only grow. Missing host prerequisites are installed: curl, and the `snippets`
+# content type on `local` (for the cloud-init that installs the guest agent).
+#
+# The OS: VMs are full clones of a template (VM 9100, built on first use) whose
+# disk is Debian 13's genericcloud image, checked against its SHA512SUMS. The
+# template is a snapshot of that day's image; `template --rebuild` refreshes it
+# for VMs created later (runner setup updates packages in every VM anyway).
 #
 # Options: --name (VM name, which becomes the hostname and the runner name),
 # --token (registration token for create, removal token for destroy; also
@@ -25,7 +31,7 @@
 # (40), --labels (extra runner labels), --storage (local-lvm), --bridge (vmbr0),
 # --ssh-keys (file of public keys for the VM's `debian` user; default
 # /root/.ssh/authorized_keys), --template-id (9100), --yes (destroy without
-# asking).
+# asking), --rebuild (template: replace the existing one).
 set -euo pipefail
 
 TAG=gh-runner
@@ -35,7 +41,7 @@ SNIPPET=gh-runner-vendor.yaml
 SETUP_URL=https://raw.githubusercontent.com/zxj001/nas_scripts/main/scripts/ghrunner_setup.sh
 
 usage() {
-    sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,34p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 die() {
@@ -45,7 +51,40 @@ die() {
 
 # The VM ID of the VM called $1 on this node, or nothing.
 vm_id() {
-    qm list | awk -v name="$1" 'NR > 1 && $2 == name { print $1 }'
+    local ids
+    ids=$(qm list | awk -v name="$1" 'NR > 1 && $2 == name { print $1 }')
+    [[ $(wc -w <<<"$ids") -le 1 ]] || die "several VMs are called $1 (${ids//$'\n'/ }); rename all but one"
+    echo "$ids"
+}
+
+is_template() {
+    qm config "$1" </dev/null | grep -q '^template: 1'
+}
+
+# Disk size of scsi0 in whole GB.
+disk_gb() {
+    qm config "$1" </dev/null | awk -F'size=' '/^scsi0:/ {
+        split($2, a, ","); n = a[1] + 0; u = substr(a[1], length(a[1]))
+        if (u == "T") n *= 1024; else if (u == "M") n /= 1024; else if (u == "K") n /= 1048576
+        printf "%d\n", n
+    }'
+}
+
+# curl for the image download; everything else ships with Proxmox VE.
+ensure_host_tools() {
+    command -v curl >/dev/null && return 0
+    echo "Installing curl"
+    apt-get install -y -qq curl >/dev/null 2>&1 || {
+        apt-get update -qq || true   # an unlicensed enterprise repo fails; the rest still updates
+        apt-get install -y -qq curl >/dev/null
+    }
+}
+
+check_host() {
+    pvesm status | awk 'NR > 1 { print $1 }' | grep -qx "$STORAGE" || die "no storage $STORAGE (see pvesm status)"
+    ip link show "$BRIDGE" >/dev/null 2>&1 || die "no bridge $BRIDGE (see ip -br link)"
+    perl -MJSON::PP -e1 2>/dev/null || die "perl JSON::PP is missing; is this a Proxmox VE host?"
+    ensure_host_tools
 }
 
 vm_status() {
@@ -118,10 +157,12 @@ ensure_snippet() {
     local storage path content
     storage=$(pvesm status --content snippets 2>/dev/null | awk 'NR > 1 && $3 == "active" { print $1; exit }')
     if [[ -z $storage ]]; then
-        content=$(awk '/^[a-z]+: / { in_local = ($2 == "local") } in_local && $1 == "content" { print $2 }' \
-            /etc/pve/storage.cfg 2>/dev/null || true)
-        die "no storage allows snippets; enable them on local with:
-  pvesm set local --content ${content:+$content,}snippets"
+        content=$(awk '/^[a-z]+: / { in_local = ($1 == "dir:" && $2 == "local") }
+            in_local && $1 == "content" { print $2 }' /etc/pve/storage.cfg 2>/dev/null || true)
+        [[ -n $content ]] || die "no storage allows snippets and there is no dir storage 'local'; add snippets to a dir storage"
+        echo "Allowing snippets on storage local (content: $content,snippets)" >&2
+        pvesm set local --content "$content,snippets" >&2
+        storage=local
     fi
     path=$(pvesm path "$storage:snippets/$SNIPPET")
     content='#cloud-config
@@ -137,20 +178,30 @@ runcmd:
     echo "$storage:snippets/$SNIPPET"
 }
 
+# The template VM, built when missing. One left half-built by an interrupted
+# run (tagged by us, not yet a template) is removed and built again.
 cmd_template() {
     local tmp
+    check_host
     if qm status "$TEMPLATE_ID" >/dev/null 2>&1; then
-        qm config "$TEMPLATE_ID" | grep -q '^template: 1' \
-            || die "VM $TEMPLATE_ID exists and is not a template; pick another --template-id"
-        return 0
+        has_tag "$TEMPLATE_ID" "$TAG-template" \
+            || die "VM $TEMPLATE_ID is not ours (no $TAG-template tag); pick another --template-id"
+        if is_template "$TEMPLATE_ID" && ((!REBUILD)); then
+            return 0
+        fi
+        if is_template "$TEMPLATE_ID"; then
+            echo "Removing template $TEMPLATE_ID to rebuild it (existing VMs are full clones and keep working)"
+        else
+            echo "Removing half-built template $TEMPLATE_ID from an interrupted run"
+        fi
+        qm destroy "$TEMPLATE_ID" --purge 1 --destroy-unreferenced-disks 1 >/dev/null
     fi
-    pvesm status | awk 'NR > 1 { print $1 }' | grep -qx "$STORAGE" || die "no storage $STORAGE (see pvesm status)"
-    ip link show "$BRIDGE" >/dev/null 2>&1 || die "no bridge $BRIDGE (see ip -br link)"
 
     echo "Building template $TEMPLATE_ID from $IMAGE"
     tmp=$(mktemp -d /var/tmp/gh-runner-image.XXXXXX)
     # shellcheck disable=SC2064  # expand $tmp now
     trap "rm -rf '$tmp'" EXIT
+    echo "Downloading $IMAGE_URL/$IMAGE"
     curl -fL --progress-bar -o "$tmp/$IMAGE" "$IMAGE_URL/$IMAGE"
     curl -fsSL "$IMAGE_URL/SHA512SUMS" | grep "  $IMAGE\$" >"$tmp/SHA512SUMS" \
         || die "$IMAGE is not in SHA512SUMS"
@@ -179,32 +230,62 @@ push_setup() {
     fi
 }
 
+# Size and cloud-init settings for VM $1. A new VM ($2 = 1) gets all of them;
+# an existing one only the --cores/--memory/--disk given this time, and its
+# disk only grows. The gh-runner tag goes on last, so a clone that still has
+# the template's tag was interrupted here and is finished on the next run.
+configure_vm() {
+    local vmid=$1 fresh=$2 snippet keys=$SSH_KEYS settings=() size
+    snippet=$(ensure_snippet)
+    ((fresh || CORES_SET)) && settings+=(--cores "$CORES")
+    ((fresh || MEMORY_SET)) && settings+=(--memory "$MEMORY")
+    if ((fresh)); then
+        settings+=(--cicustom "vendor=$snippet")
+        [[ -z $keys ]] || settings+=(--sshkeys "$keys")
+    fi
+    ((${#settings[@]} == 0)) || qm set "$vmid" "${settings[@]}" >/dev/null
+    if ((fresh || DISK_SET)); then
+        size=$(disk_gb "$vmid")
+        if ((size < DISK)); then
+            qm resize "$vmid" scsi0 "${DISK}G"
+        elif ((size > DISK)); then
+            echo "Disk is ${size} GB; disks only grow, so --disk $DISK is ignored"
+        fi
+    fi
+    if ((!fresh && (CORES_SET || MEMORY_SET))) && [[ $(vm_status "$vmid") == running ]]; then
+        echo "New CPU/memory settings take effect when VM $vmid next boots (qm reboot $vmid)"
+    fi
+    has_tag "$vmid" "$TAG" || qm set "$vmid" --tags "$TAG" >/dev/null
+}
+
 cmd_create() {
     [[ -n $NAME ]] || die "create needs --name"
     [[ $NAME =~ ^[a-z0-9][a-z0-9-]*$ ]] || die "--name must be a hostname: lowercase letters, digits, -"
-    local vmid snippet keys token
+    [[ -z $SSH_KEYS || -f $SSH_KEYS ]] || die "no ssh keys file $SSH_KEYS"
+    local vmid token report
     vmid=$(vm_id "$NAME")
     if [[ -n $vmid ]]; then
-        has_tag "$vmid" "$TAG" || die "VM $vmid is called $NAME but is not a runner VM (no $TAG tag)"
-        echo "VM $vmid ($NAME) exists"
+        if has_tag "$vmid" "$TAG"; then
+            echo "VM $vmid ($NAME) exists"
+            configure_vm "$vmid" 0
+        elif has_tag "$vmid" "$TAG-template" && ! is_template "$vmid"; then
+            echo "VM $vmid ($NAME) was cloned but not configured; finishing it"
+            configure_vm "$vmid" 1
+        else
+            die "VM $vmid is called $NAME but is not a runner VM (no $TAG tag)"
+        fi
     else
         cmd_template
-        snippet=$(ensure_snippet)
-        keys=$SSH_KEYS
-        [[ -z $keys || -f $keys ]] || die "no ssh keys file $keys"
         vmid=$(pvesh get /cluster/nextid)
         echo "Creating VM $vmid ($NAME): $CORES cores, $MEMORY MB, ${DISK} GB"
         qm clone "$TEMPLATE_ID" "$vmid" --name "$NAME" --full 1 --storage "$STORAGE"
-        qm set "$vmid" --cores "$CORES" --memory "$MEMORY" --tags "$TAG" \
-            --cicustom "vendor=$snippet" ${keys:+--sshkeys "$keys"} >/dev/null
-        qm resize "$vmid" scsi0 "${DISK}G"
+        configure_vm "$vmid" 1
     fi
     [[ $(vm_status "$vmid") == running ]] || qm start "$vmid"
     wait_for_agent "$vmid"
     guest "$vmid" cloud-init status --wait >/dev/null || true
 
     push_setup "$vmid"
-    local report
     if report=$(guest "$vmid" bash /root/ghrunner_setup.sh check --name "$NAME" 2>/dev/null); then
         echo "$report"
         echo "VM $vmid ($NAME): runner already set up"
@@ -247,7 +328,10 @@ cmd_destroy() {
     [[ -n $NAME ]] || die "destroy needs --name"
     local vmid token answer
     vmid=$(vm_id "$NAME")
-    [[ -n $vmid ]] || die "no VM called $NAME"
+    if [[ -z $vmid ]]; then
+        echo "No VM called $NAME; nothing to delete"
+        return 0
+    fi
     has_tag "$vmid" "$TAG" || die "VM $vmid ($NAME) is not a runner VM (no $TAG tag); not touching it"
     if ((!YES)); then
         read -rp "Delete VM $vmid ($NAME) and its disks? Type the name to confirm: " answer </dev/tty
@@ -272,20 +356,21 @@ cmd_destroy() {
 COMMAND=${1:-}
 [[ -n $COMMAND ]] && shift
 NAME='' TOKEN='' CORES=2 MEMORY=4096 DISK=40 LABELS='' STORAGE=local-lvm BRIDGE=vmbr0
-SSH_KEYS='' TEMPLATE_ID=9100 YES=0
+SSH_KEYS='' TEMPLATE_ID=9100 YES=0 REBUILD=0 CORES_SET=0 MEMORY_SET=0 DISK_SET=0
 while (($#)); do
     case $1 in
         --name) NAME=$2; shift 2 ;;
         --token) TOKEN=$2; shift 2 ;;
-        --cores) CORES=$2; shift 2 ;;
-        --memory) MEMORY=$2; shift 2 ;;
-        --disk) DISK=${2%G}; shift 2 ;;
+        --cores) CORES=$2; CORES_SET=1; shift 2 ;;
+        --memory) MEMORY=$2; MEMORY_SET=1; shift 2 ;;
+        --disk) DISK=${2%G}; DISK_SET=1; shift 2 ;;
         --labels) LABELS=$2; shift 2 ;;
         --storage) STORAGE=$2; shift 2 ;;
         --bridge) BRIDGE=$2; shift 2 ;;
         --ssh-keys) SSH_KEYS=$2; shift 2 ;;
         --template-id) TEMPLATE_ID=$2; shift 2 ;;
         --yes) YES=1; shift ;;
+        --rebuild) REBUILD=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *) die "unknown option $1 (see --help)" ;;
     esac
@@ -295,6 +380,9 @@ if [[ -z $SSH_KEYS ]]; then
     [[ -f $SSH_KEYS ]] || SSH_KEYS=''
 fi
 case $COMMAND in -h|--help|'') usage; exit 0 ;; esac
+for n in "$CORES" "$MEMORY" "$DISK" "$TEMPLATE_ID"; do
+    [[ $n =~ ^[1-9][0-9]*$ ]] || die "--cores, --memory, --disk and --template-id take whole numbers"
+done
 [[ $EUID -eq 0 ]] || die "run this as root on the Proxmox host"
 command -v qm >/dev/null || die "qm not found; run this on the Proxmox host"
 

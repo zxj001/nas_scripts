@@ -69,16 +69,28 @@ bash proxmox_gh_runner.sh destroy --name gh-runner-1                # unregister
 | `--storage` / `--bridge` | `local-lvm` / `vmbr0` | Where the disks go and which network the VM joins. |
 | `--ssh-keys` | `/root/.ssh/authorized_keys` | Public keys for the VM's `debian` user, for SSH when debugging. |
 | `--template-id` | 9100 | The template VM, built on first `create` (or with `template`). |
+| `--rebuild` | - | With `template`: replace the template with one from the current Debian image. |
 | `--yes` | - | `destroy` without typing the name to confirm. |
 
-- **Template:** built once from Debian's `genericcloud` image, checked against its
-  `SHA512SUMS`, as VM 9100 tagged `gh-runner-template`. Delete it and the next `create`
-  builds a fresh one from the current image.
-- **Snippets:** first boot installs the guest agent through a cloud-init vendor snippet, so
-  a storage must allow the `snippets` content type. If none does, the script stops and
-  prints the `pvesm set local --content ...,snippets` command to run once.
-- **Safe to rerun:** `create` on an existing VM starts it if needed and sets up or just
-  checks its runner. Runner VMs are tagged `gh-runner`; `list` and `destroy` touch no other VM.
+- **The OS:** nothing is installed. Every VM is a full clone of template VM 9100, whose
+  disk is Debian 13's official cloud image (`debian-13-genericcloud-amd64.qcow2` from
+  cloud.debian.org, checked against its `SHA512SUMS`): Debian already installed, ready for
+  cloud-init. On first boot cloud-init sets the hostname, network and SSH keys and
+  installs the guest agent. The template is a snapshot of the image on the day it was
+  built; `template --rebuild` refreshes it for later VMs. Existing VMs are unaffected, and
+  runner setup updates packages in each VM anyway.
+- **Prerequisites** are set up as needed: `curl` on the host if missing, and the
+  `snippets` content type on the `local` storage (cloud-init's vendor snippet that
+  installs the guest agent lives there). Inside the VM, `ghrunner_setup.sh` installs its own.
+- **Safe to rerun**, including after an interrupted run:
+  - a half-built template is removed and built again;
+  - a clone interrupted before it was configured is finished;
+  - a stopped VM is started, and its runner set up or, if it already is, just checked;
+  - on an existing VM only the `--cores`/`--memory`/`--disk` given are applied (CPU and
+    memory at the next reboot), and a disk only grows.
+- **Only its own VMs:** runner VMs are tagged `gh-runner` and the template
+  `gh-runner-template`. Any other VM (a name clash, a foreign VM at the template ID,
+  two VMs with the same name) stops the script rather than being changed or deleted.
 - **Destroy:** it unregisters the runner from GitHub first (removal token from the
   runner's **...** menu > **Remove**). A stopped VM is deleted without unregistering, so
   remove the runner on GitHub yourself.

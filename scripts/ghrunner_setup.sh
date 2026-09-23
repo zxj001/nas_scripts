@@ -26,10 +26,11 @@
 #   sudo scripts/ghrunner_setup.sh cleanup [--dry-run]
 #
 # install also sets up ghrunner-cleanup.timer, which runs `cleanup` hourly for
-# every runner on the machine: runner logs and idle job workspaces older than
-# GHRUNNER_KEEP_DAYS (7) go, as do unused Docker images and build cache. Above
-# GHRUNNER_DISK_LIMIT (80%) full it also clears all idle workspaces and unused
-# images, and warns in the journal if that is not enough. Set both in
+# every runner on the machine: runner logs, idle job workspaces, tool caches
+# (~/.cache, ~/.npm), unused Docker images and build cache older than
+# GHRUNNER_KEEP_DAYS (7) go. Above GHRUNNER_DISK_LIMIT (80%) full it also
+# clears all idle workspaces, tool caches and unused images, and warns in the
+# journal if that is not enough. Set both in
 # /etc/default/ghrunner-cleanup; `journalctl -u ghrunner-cleanup` shows runs.
 #
 # Options: --url (default: https://github.com/Nicu-Labs, the org; a repo URL
@@ -44,7 +45,7 @@ set -euo pipefail
 PATH=$PATH:/usr/sbin:/sbin
 
 usage() {
-    sed -n '2,41p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,42p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 die() {
@@ -271,8 +272,36 @@ clean_docker() {
     docker builder prune -af "${filter[@]}" | tail -n1
 }
 
+# Tool caches in the runner user's home: ~/.cache (Playwright browsers, pip,
+# node-gyp, Go, ...) and ~/.npm. Files no job has read for $2 days go, or with
+# $3 set the whole caches; a removed entry is only downloaded again.
+clean_home() {
+    local home=$1 days=$2 all=$3 cache n
+    for cache in "$home/.cache" "$home/.npm"; do
+        [[ -d $cache ]] || continue
+        if ((all)); then
+            remove "$cache"
+        elif ((DRY_RUN)); then
+            n=$(find "$cache" -type f -atime "+$days" | wc -l)
+            echo "  would remove $n files unused for $days days from $cache"
+        else
+            n=$(find "$cache" -type f -atime "+$days" -print -delete | wc -l)
+            find "$cache" -mindepth 1 -type d -empty -delete
+            ((n == 0)) || echo "  removed $n files unused for $days days from $cache"
+        fi
+    done
+}
+
+# Home directories of the accounts the runners here run as.
+runner_homes() {
+    local dir
+    for dir in "$@"; do
+        [[ -n $dir ]] && getent passwd "$(stat -c %U "$dir")" | cut -d: -f6
+    done | sort -u
+}
+
 cmd_report() {
-    local dir state
+    local dir state home
     df -h --output=target,size,used,avail,pcent / | sed 1d | sed 's/^/disk /'
     while read -r dir; do
         [[ -n $dir ]] || continue
@@ -280,6 +309,11 @@ cmd_report() {
         runner_busy "$dir" && state=busy
         printf '%-6s %6s  %s\n' "$state" "$(du -sh "$dir" 2>/dev/null | cut -f1)" "$dir"
     done < <(runner_dirs)
+    while read -r home; do
+        [[ -n $home ]] || continue
+        printf '%-6s %6s  %s\n' cache "$(du -sch "$home/.cache" "$home/.npm" 2>/dev/null | tail -n1 | cut -f1)" \
+            "$home/.cache $home/.npm"
+    done < <(mapfile -t d < <(runner_dirs); runner_homes "${d[@]}")
     if command -v docker >/dev/null && docker info >/dev/null 2>&1; then
         docker system df
     fi
@@ -288,7 +322,7 @@ cmd_report() {
 cmd_cleanup() {
     [[ $EUID -eq 0 ]] || die "cleanup needs root (sudo)"
     local days=${GHRUNNER_KEEP_DAYS:-7} limit=${GHRUNNER_DISK_LIMIT:-80}
-    local dirs dir used all=0 idle=1
+    local dirs dir used home all=0 idle=1
     mapfile -t dirs < <(runner_dirs)
     for dir in "${dirs[@]}"; do
         [[ -n $dir ]] || continue
@@ -298,13 +332,21 @@ cmd_cleanup() {
     done
     used=$(disk_percent /)
     ((used < limit)) || all=1
-    ((all)) && echo "disk at or above ${limit}%: clearing all idle workspaces and unused images"
+    ((all)) && echo "disk at or above ${limit}%: clearing all idle workspaces, tool caches and unused images"
 
     for dir in "${dirs[@]}"; do
         [[ -n $dir ]] && clean_runner "$dir" "$days" "$all"
     done
-    # A job may have just pulled an image, so leave Docker until all are idle.
-    if ((idle)); then clean_docker "$days" "$all"; else echo "docker: a job is running, skipped"; fi
+    # A job may be using an image or a cache, so leave both until all are idle.
+    if ((idle)); then
+        while read -r home; do
+            echo "$home"
+            clean_home "$home" "$days" "$all"
+        done < <(runner_homes "${dirs[@]}")
+        clean_docker "$days" "$all"
+    else
+        echo "tool caches and docker: a job is running, skipped"
+    fi
 
     cmd_report
     for dir in / "${dirs[@]}"; do

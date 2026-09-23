@@ -33,7 +33,14 @@ The script enforces this: `install` will not register a second runner on a machi
 `check` warns (`WARN`) on older machines that already have several, like `debianbeelink`.
 
 Suggested VM: Debian 13 without a desktop, 2 vCPU, 4 GB RAM, 40 GB disk (thin
-provisioned); more CPU and RAM for heavy builds. For a new runner VM in Proxmox:
+provisioned, so only what is written takes space); more CPU and RAM for heavy builds.
+
+Disk, roughly: an idle runner VM is about 3 GB (Debian ~1.5 GB, Docker ~0.3 GB, the
+runner ~0.7 GB, logs and apt cache). Building a web app adds ~5-12 GB: the checkout and
+`node_modules`, the npm cache, Node from `setup-node`, Playwright browsers, Docker images
+(`node:22` alone is ~1.1 GB) and Docker build cache. 40 GB leaves room for peaks, such as
+two tool versions during an upgrade, before cleanup's 80% limit (32 GB). 25 GB is a
+workable minimum. For a new runner VM in Proxmox:
 
 1. Clone the Debian template (or install Debian, [docs/01-debian-install.md](docs/01-debian-install.md)).
 2. Give it a unique hostname: it becomes the runner name, and registration fails if the
@@ -126,13 +133,18 @@ whether GitHub shows the runner as **Idle** is on the org's runners page.
 
 - Deletes runner logs (`_diag`) and job workspaces (`_work/*`) untouched for
   `GHRUNNER_KEEP_DAYS` (7) days. A removed workspace is only cloned again on the next job.
+- Deletes files in the runner user's tool caches (`~/.cache`: Playwright browsers, pip,
+  node-gyp, Go; and `~/.npm`) that no job has read for the same number of days, so old
+  tool versions go while the ones in use stay.
 - Prunes Docker images no container uses, and build cache, older than the same age.
   Containers and volumes are never touched, so other services on the machine keep their data.
 - When a disk the runners use is at `GHRUNNER_DISK_LIMIT` (80%) or more, clears every
-  idle workspace and every unused image regardless of age, then writes a warning to the
+  idle workspace, the tool caches and every unused image regardless of age, then writes a warning to the
   journal if the disk is still over the limit.
-- Leaves a runner's workspaces alone while it has a job running, and skips Docker while any
-  job is running.
+- Leaves a runner's workspaces alone while it has a job running, and skips tool caches and
+  Docker while any job is running.
+
+Anything removed is only downloaded or cloned again by the next job that needs it.
 
 ```sh
 sudo ghrunner_setup.sh report                     # disk, busy/idle and size per runner, docker df

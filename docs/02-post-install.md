@@ -47,7 +47,8 @@ Applications → Settings → Window Manager Tweaks → Compositor → uncheck
 
 ## Browser
 
-Firefox comes preinstalled. For Chromium: `sudo apt install chromium`.
+Firefox comes preinstalled. Chromium is installed with the dev tools; see
+[05-dev-tools.md](05-dev-tools.md#chromium).
 
 ## Snapshot (VM)
 

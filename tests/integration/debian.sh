@@ -16,9 +16,10 @@ for _attempt in {1..30}; do
 done
 docker exec "$name" systemctl is-active dbus
 # A real package install, file creation, unit mask, ssh enable and repeat run.
+# Docker is left to the task tests: its daemon does not start reliably nested here.
 for pass in first second; do
     docker exec -e PYTHONDONTWRITEBYTECODE=1 "$name" bash /work/scripts/setup.sh \
-        --yes --only download-tools,directories,git,dev-utilities,ssh,no-sleep --with-deps --json >"$results/$pass.json"
+        --yes --only download-tools,directories,git,dev-utilities,ssh,no-sleep,chromium --with-deps --json >"$results/$pass.json"
 done
 python3 - "$results" <<'PY'
 import json,pathlib,sys

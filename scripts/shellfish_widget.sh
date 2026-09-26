@@ -69,9 +69,13 @@ level_color() {
     fi
 }
 
-# icon, colored value, label in the default color
+# One line per sensor: icon, label, then a colored bar and value ("83%") or
+# just the colored value ("71°C"). The widget's floating layout packs items
+# onto any line with room, so each line starts with a break.
 metric() {
-    printf '%s\n' "$1" "$(level_color "$2" "$4" "$5")" "$2" foreground "$3"
+    printf '%s\n' --text '\n' "$1" foreground "$3" "$(level_color "$2" "$4" "$5")"
+    case "$2" in *%) printf '%s\n' "$2" ;; esac
+    printf '%s\n' --text " $2"
 }
 
 disk_percent() {

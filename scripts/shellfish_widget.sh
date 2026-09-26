@@ -71,9 +71,10 @@ level_color() {
 
 # One line per sensor: icon, label, then a colored bar and value ("83%") or
 # just the colored value ("71°C"). The widget's floating layout packs items
-# onto any line with room, so each line starts with a break.
+# onto any line with room, so each line starts with a break. A color lasts
+# until "foreground", so reset it before the icon.
 metric() {
-    printf '%s\n' --text '\n' "$1" foreground "$3" "$(level_color "$2" "$4" "$5")"
+    printf '%s\n' --text '\n' foreground "$1" "$3" "$(level_color "$2" "$4" "$5")"
     case "$2" in *%) printf '%s\n' "$2" ;; esac
     printf '%s\n' --text " $2"
 }

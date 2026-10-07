@@ -1,6 +1,8 @@
 # GitHub Actions self-hosted runners
 
-Runners for the **Nicu-Labs** GitHub org (`https://github.com/Nicu-Labs`, with the hyphen).
+Self-hosted runners for a GitHub org (`--org Nicu-Labs`, with the hyphen: every repo in
+the org can use it) or for a single repo (`--repo OWNER/REPO`, e.g. a repo under a
+personal account, which has no org). Setting up a runner always needs one of the two.
 `scripts/ghrunner_setup.sh` sets one up on any Debian machine or VM, and
 `scripts/ghrunner_setup.sh --help` lists every command.
 
@@ -19,8 +21,8 @@ What `install` does:
   and the like download them per workflow.
 - Creates the `runner` account when run as root (the runner refuses to run as root).
 - Downloads the latest runner release and checks its SHA-256 against the release notes.
-- Registers the runner with the org and runs it as a systemd service
-  (`actions.runner.Nicu-Labs.<name>.service`), with the needrestart exclusion below.
+- Registers the runner with the org or repo and runs it as a systemd service
+  (`actions.runner.<org or owner-repo>.<name>.service`), with the needrestart exclusion below.
 - Installs `ghrunner-cleanup.timer`, which keeps disk use in check ([below](#disk-cleanup-and-monitoring)).
 - Checks each runner and prints the result (see [Checking runners](#checking-runners)).
 
@@ -61,8 +63,10 @@ and the token is passed on stdin, so it is never written to a file or shown in `
 ```sh
 # from a checkout on pve1 (it then uses the checkout's ghrunner_setup.sh), or download it
 curl -fsSLO https://raw.githubusercontent.com/zxj001/nas_scripts/main/scripts/proxmox_gh_runner.sh
-bash proxmox_gh_runner.sh create --name gh-runner-1                 # asks for the token
-bash proxmox_gh_runner.sh create --name gh-runner-2 --cores 4 --memory 8192 --disk 80 --labels heavy
+bash proxmox_gh_runner.sh create --name gh-runner-1 --org Nicu-Labs  # asks for the token
+bash proxmox_gh_runner.sh create --name gh-runner-2 --repo OWNER/REPO # a runner for one repo
+bash proxmox_gh_runner.sh create --name gh-runner --count 3 --org Nicu-Labs  # 3 new: gh-runner-N, first free N
+bash proxmox_gh_runner.sh create --name gh-runner-3 --org Nicu-Labs --cores 4 --memory 8192 --disk 80 --labels heavy
 bash proxmox_gh_runner.sh list                                      # runner VMs and their checks
 bash proxmox_gh_runner.sh check --name gh-runner-1
 bash proxmox_gh_runner.sh destroy --name gh-runner-1                # unregister, then delete the VM
@@ -70,7 +74,9 @@ bash proxmox_gh_runner.sh destroy --name gh-runner-1                # unregister
 
 | Option | Default | Notes |
 |--------|---------|-------|
-| `--name` | - | Required. Lowercase letters, digits and `-`; unique in the org. |
+| `--name` | - | Required. Lowercase letters, digits and `-`; unique in the org or repo. |
+| `--count` | - | With `create`: make N new VMs `NAME-1`, `NAME-2`, ..., skipping any name a VM in the cluster already has (with `gh-runner-1` and `-2` taken, `--count 2` makes `-3` and `-4`). Every run adds N more. |
+| `--org` / `--repo` | - | `create` needs one: `--org ORG` serves every repo of the org, `--repo OWNER/REPO` just that repo. |
 | `--token` | asked for | Registration token for `create`, removal token for `destroy`; also `$GHRUNNER_TOKEN`. |
 | `--cores` / `--memory` / `--disk` | 2 / 4096 MB / 40 GB | The disk is thin provisioned. |
 | `--labels` | - | Extra runner labels, e.g. `heavy` for big builds. |
@@ -96,6 +102,17 @@ bash proxmox_gh_runner.sh destroy --name gh-runner-1                # unregister
   - a stopped VM is started, and its runner set up or, if it already is, just checked;
   - on an existing VM only the `--cores`/`--memory`/`--disk` given are applied (CPU and
     memory at the next reboot), and a disk only grows.
+- **Several at once:** with `--count`, VMs are cloned one after another, boot together,
+  and have their runners set up in parallel with the one token (each line of output is
+  prefixed with the VM name). A runner that fails does not stop the others; retry it
+  with `create --name THAT-NAME` (rerunning with `--count` would add new VMs).
+- **RAM and disk are checked first.** Proxmox will start VMs past the host's memory, and
+  the host then kills VMs to free it, so `create` stops when the VMs it would start need
+  more than the host's available RAM less 2 GB. Disks are thin: a new VM takes about 4 GB
+  at first and grows to `--disk`. `create` stops when the storage cannot hold ~4 GB per
+  new VM, and warns when their full disks would not fit, since a full thin pool stops
+  every VM on it. Runner cleanup keeps each VM under 80% of its disk; watch the pool
+  with `pvesm status`.
 - **Only its own VMs:** runner VMs are tagged `gh-runner` and the template
   `gh-runner-template`. Any other VM (a name clash, a foreign VM at the template ID,
   two VMs with the same name) stops the script rather than being changed or deleted.
@@ -114,29 +131,32 @@ registration fails if the name is taken, then set up the runner as below.
 ## Set up a runner
 
 1. Get a registration token: as an org admin, open
-   <https://github.com/organizations/Nicu-Labs/settings/actions/runners/new> and copy
+   <https://github.com/organizations/Nicu-Labs/settings/actions/runners/new> (for a repo
+   runner, as a repo admin: the repo's *Settings > Actions > Runners > New self-hosted
+   runner*, `https://github.com/OWNER/REPO/settings/actions/runners/new`) and copy
    the value after `--token` in the `config.sh` line. One token works for an hour, on as
    many VMs as you set up in that time; after that, reload the page for a new one.
 2. On the machine (a fresh VM needs only root and network):
 
    ```sh
    curl -fsSLO https://raw.githubusercontent.com/zxj001/nas_scripts/main/scripts/ghrunner_setup.sh
-   bash ghrunner_setup.sh install --token AAAA...    # the runner is named after the host
+   bash ghrunner_setup.sh install --org Nicu-Labs --token AAAA...  # named after the host
+   bash ghrunner_setup.sh install --repo OWNER/REPO                # or: one repo; asks for the token
    ```
 
    Leave out `--token` and the script asks for it (input hidden), which keeps it out of
    shell history; `GHRUNNER_TOKEN=AAAA...` in the environment works too. From a checkout,
    `bash scripts/ghrunner_setup.sh install ...` does the same.
-3. The runner appears as **Idle** on the org's runners page.
+3. The runner appears as **Idle** on the org's (or repo's) runners page.
 4. Add the machine and runner name to [Local Machines](README.md#local-machines).
 
 ### Inputs
 
 | Option | Required | Default | Notes |
 |--------|----------|---------|-------|
-| `--token` | yes | asked for | From step 1. Also read from `$GHRUNNER_TOKEN`, or asked for on the terminal. With no terminal either, the script tries `gh api` as a last resort, which needs `gh auth refresh -s admin:org` first. |
-| `--url` | no | `https://github.com/Nicu-Labs` | The org. A repo URL (`https://github.com/Nicu-Labs/REPO`) makes a runner for that repo only. |
-| `--name` | no | hostname | Must be unique in the org; registration fails if it is taken. Prefer setting the hostname instead. |
+| `--token` | yes | asked for | From step 1. Also read from `$GHRUNNER_TOKEN`, or asked for on the terminal. With no terminal either, the script tries `gh api` as a last resort, which needs `gh auth refresh -s admin:org` first (repo admin rights for `--repo`). |
+| `--org` / `--repo` | `install`: one of them | - | `--org ORG` registers with the org (all its repos); `--repo OWNER/REPO` with that repo only. Other commands use where the runner is registered. |
+| `--name` | no | hostname | Must be unique in the org or repo; registration fails if it is taken. Prefer setting the hostname instead. |
 | `--labels` | no | - | Extra labels for `runs-on:`, comma separated. `self-hosted`, `linux` and `X64`/`ARM64` are always added. |
 | `--user` | no | `runner` as root, else you | The account the service runs as. Never `root`. |
 | `--dir` | no | `~USER/actions-runner-NAME` | Where the runner lives. |
@@ -146,7 +166,7 @@ Run as root, or as the runner user with sudo. A workflow picks the runner with
 
 ### Managing a runner
 
-Pass the same `--name` (and `--user` or `--url` if they were not the defaults) used at install:
+Pass the same `--name` (and `--user` if it was not the default) used at install:
 
 ```sh
 bash ghrunner_setup.sh status --name build-vm-1
@@ -155,8 +175,8 @@ bash ghrunner_setup.sh uninstall --name build-vm-1   # remove the service, keep 
 bash ghrunner_setup.sh unregister --name build-vm-1 --token BBBB...
 ```
 
-`unregister` also removes the runner from the org; its token is the removal token from the
-runner's **...** menu > **Remove** on the org runners page (or fetched with `gh`). Delete the
+`unregister` also removes the runner from the org or repo it is registered with; its token is the
+removal token from the runner's **...** menu > **Remove** on that runners page (or fetched with `gh`). Delete the
 runner directory afterwards if the machine is staying.
 
 ### Checking runners
@@ -178,7 +198,7 @@ bash ghrunner_setup.sh check --name build-vm-1
 
 A `WARN` line flags a machine with more than one runner. A `FAIL` line names what is wrong, and the command (like `install`) exits 1. Rerunning
 `install` with the same options fixes anything it can. The check sees this machine only;
-whether GitHub shows the runner as **Idle** is on the org's runners page.
+whether GitHub shows the runner as **Idle** is on the org's or repo's runners page.
 
 ### If jobs are not picked up
 

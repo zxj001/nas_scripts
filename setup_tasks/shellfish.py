@@ -18,6 +18,8 @@ from setup_tasks.common import apt
 TOOLS = ("openssl", "xxd", "curl", "crontab")
 # First line of our script; anything else at the target is an operator file.
 MARK = "# shellfish_widget.sh - "
+# Prefix shellfish_widget.sh --disable puts on the cron line; such a widget stays off.
+DISABLED = "#shellfish-disabled# "
 # Earlier setup versions ran the widget from a repository checkout. Such a line,
 # including one the operator gave mount points, --name or --target, is kept and
 # pointed at the installed copy, so its arguments survive.
@@ -82,6 +84,16 @@ def read_crontab(ctx):
     raise RuntimeError("cannot read crontab: " + output.stderr.strip())
 
 
+def disabled(ctx):
+    if not ctx.have("crontab"):
+        return False
+    lines = read_crontab(ctx).splitlines()
+    path = str(target(ctx))
+    return any(line.startswith(DISABLED) for line in lines) and not any(
+        runs(line, path) for line in lines
+    )
+
+
 def integration_missing(ctx):
     if (ctx.home / ".shellfishrc").exists():
         return None
@@ -100,6 +112,8 @@ def probe(ctx, task):
     missing = integration_missing(ctx)
     if missing:
         return missing
+    if disabled(ctx):
+        return ctx.result("skipped", "widget disabled", f"{target(ctx)} --install enables it again")
     path = target(ctx)
     if path.exists() or path.is_symlink():
         if path.is_symlink() or not path.is_file() or not ours(path):

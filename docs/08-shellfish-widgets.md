@@ -83,6 +83,38 @@ scripts/shellfish_widget.sh --target pve1       # a specific widget (ShellFish P
 
 To show more disks or change how often it runs, edit the entry with `crontab -e`.
 
+`--help` prints all the options.
+
+## Install, disable, uninstall
+
+The script can manage its own cron line, without `setup-machine`:
+
+```
+scripts/shellfish_widget.sh --install                  # copy to ~/.local/bin, add the cron line, send once
+scripts/shellfish_widget.sh --install / /media/Drive1  # new arguments replace the cron line's
+shellfish_widget.sh --disable                          # turn the widget off on this machine
+shellfish_widget.sh --install                          # turn it back on, same arguments
+shellfish_widget.sh --uninstall                        # remove the cron line and the copy
+```
+
+- `--install` copies the script to `~/.local/bin/shellfish_widget.sh`, or to
+  `/usr/local/bin` as root, which are the same paths the setup step uses. It
+  checks `~/.shellfishrc`, `openssl`, `xxd`, `curl` and `crontab` before it
+  changes anything. Like the setup step, the line sends to the widget named after
+  the short hostname. `--target` picks a different widget and `--target ''` the
+  one shared widget.
+- `--install` with no other arguments also enables a disabled widget and keeps
+  its arguments. With arguments, it replaces the widget line.
+- `--disable` comments the line out with a `#shellfish-disabled# ` prefix. Rerunning
+  `setup-machine` reports the step as `skipped` and leaves the widget off until
+  `--install` enables it again.
+- `--uninstall` removes the widget lines from the crontab, disabled ones included, and
+  removes the installed copy. A later `setup-machine --only shellfish` installs it again.
+  Use `--disable` to keep a machine's widget off.
+
+The last update stays on the phone after `--disable` or `--uninstall`. Remove that
+machine's widget on the iPhone if you no longer want it.
+
 | Item | Source |
 |------|--------|
 | CPU | busy share of all cores over 1 second, from `/proc/stat` |

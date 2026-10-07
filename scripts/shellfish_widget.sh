@@ -9,13 +9,31 @@
 #   scripts/shellfish_widget.sh --name NAS       # title instead of the hostname
 #   scripts/shellfish_widget.sh --target pve1    # a widget of its own (ShellFish Pro)
 #   scripts/shellfish_widget.sh --print          # show the arguments, send nothing
+#   scripts/shellfish_widget.sh --help           # this text
 #
-# setup-machine --only shellfish runs it from cron. Cron shells do not read
+# Cron runs it every 15 minutes. Manage that cron line with:
+#
+#   --install [options] [mounts]  copy the script to ~/.local/bin (root:
+#       /usr/local/bin), add the cron line and send once. It also re-enables a
+#       disabled widget, keeping its arguments unless new ones are given. The
+#       line sends to the widget named after the short hostname unless
+#       --target says otherwise (--target '' for the one shared widget).
+#   --disable    comment the cron line out. setup-machine leaves it that way
+#       until --install enables it again.
+#   --uninstall  remove the cron line and the installed copy. setup-machine
+#       --only shellfish puts both back; use --disable to keep it off.
+#
+# setup-machine --only shellfish also installs it. Cron shells do not read
 # ~/.bashrc past its interactive guard, so ~/.shellfishrc is sourced here.
 set -euo pipefail
 
+# First line of this script; anything else at the install path is an operator file.
+MARK="# shellfish_widget.sh - "
+# Prefix of a cron line --disable turned off; setup_tasks/shellfish.py reads it too.
+DISABLED="#shellfish-disabled# "
+
 usage() {
-    sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
+    awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"
 }
 
 # Busy share of all CPUs over one second, from two /proc/stat samples.
@@ -83,8 +101,155 @@ disk_percent() {
     df -P "$1" | awk 'NR == 2 { print $5 }'
 }
 
+# Where --install puts the script; setup_tasks/shellfish.py uses the same paths.
+installed_path() {
+    if [ "$(id -u)" = 0 ]; then echo /usr/local/bin/shellfish_widget.sh
+    else echo "$HOME/.local/bin/shellfish_widget.sh"
+    fi
+}
+
+read_crontab() {
+    local out
+    # An unreadable crontab is not an empty one; never overwrite it.
+    if ! out=$(crontab -l 2>&1); then
+        case "$out" in
+            *"no crontab for"*) return 0 ;;
+            *) echo "cannot read crontab: $out" >&2; return 1 ;;
+        esac
+    fi
+    [ -z "$out" ] || printf '%s\n' "$out"
+}
+
+# Cron lines that run any copy of the widget script, live or disabled.
+is_widget_line() {
+    case "$1" in
+        "$DISABLED"*) return 0 ;;
+        \#*) return 1 ;;
+        *shellfish_widget.sh*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# The crontab without its widget lines.
+other_lines() {
+    local line
+    while IFS= read -r line; do
+        is_widget_line "$line" || printf '%s\n' "$line"
+    done <<<"$1"
+}
+
+write_crontab() {
+    if [ -z "$1" ]; then printf '' | crontab -
+    else printf '%s\n' "$1" | crontab -
+    fi
+}
+
+# Cron reads % as a newline, so escape it in the arguments.
+cron_line() {
+    local path=$1 word line
+    shift
+    line="*/15 * * * * $(printf '%q' "$path")"
+    for word in "$@"; do line+=" $(printf '%q' "$word")"; done
+    printf '%s >/dev/null 2>&1\n' "${line//%/\\%}"
+}
+
+# $1 is "replace" to write a new line from the other arguments, or "keep" to
+# re-enable the widget lines already in the crontab.
+do_install() {
+    local mode=$1 self dest tmp crontab line lines=() new=() tool
+    shift
+    # Check everything before changing anything.
+    if [ ! -r "$HOME/.shellfishrc" ]; then
+        echo "no ~/.shellfishrc - install Shell Integration from the ShellFish app first" >&2
+        return 1
+    fi
+    for tool in openssl xxd curl crontab; do
+        if ! command -v "$tool" >/dev/null; then
+            echo "$tool is missing - run: setup-machine --only shellfish" >&2
+            return 1
+        fi
+    done
+    dest=$(installed_path)
+    if [ -e "$dest" ] || [ -L "$dest" ]; then
+        if [ -L "$dest" ] || [ ! -f "$dest" ] || ! head -n 3 "$dest" | grep -qF "$MARK"; then
+            echo "$dest is not this script; move it aside first" >&2
+            return 1
+        fi
+    fi
+    crontab=$(read_crontab)
+
+    self=$(readlink -f "${BASH_SOURCE[0]}")
+    if [ "$self" != "$(readlink -f "$dest" 2>/dev/null || true)" ]; then
+        mkdir -p "${dest%/*}"
+        tmp=$(mktemp "${dest%/*}/.shellfish_widget.sh.XXXXXX")
+        cp "$self" "$tmp"
+        chmod 755 "$tmp"
+        mv -f "$tmp" "$dest"
+    fi
+
+    while IFS= read -r line; do
+        is_widget_line "$line" && lines+=("$line")
+    done <<<"$crontab"
+    if [ "$mode" = replace ] || [ "${#lines[@]}" -eq 0 ]; then
+        new=("$(cron_line "$dest" "$@")")
+    else
+        # Enable: uncomment the existing lines and point them at the installed copy.
+        for line in "${lines[@]}"; do
+            line=${line#"$DISABLED"}
+            new+=("$(printf '%s\n' "$line" |
+                sed -E "s#[^[:space:]]*shellfish_widget\.sh([[:space:]]|\$)#$(printf '%q' "$dest")\\1#")")
+        done
+    fi
+    crontab=$(other_lines "$crontab")
+    [ -z "$crontab" ] || crontab+=$'\n'
+    crontab+=$(printf '%s\n' "${new[@]}")
+    write_crontab "$crontab"
+    printf 'installed %s; crontab:\n' "$dest"
+    printf '  %s\n' "${new[@]}"
+    # Send once now: the first line's command without its schedule and redirect.
+    line=$(awk '{ for (i = 1; i <= 5; i++) $i = ""; sub(/^ +/, ""); print }' <<<"${new[0]}")
+    line=${line% >/dev/null 2>&1}
+    bash -c "${line//\\%/%}"
+}
+
+do_disable() {
+    local crontab line out=() n=0
+    crontab=$(read_crontab)
+    while IFS= read -r line; do
+        if is_widget_line "$line" && [ "${line#"$DISABLED"}" = "$line" ]; then
+            line="$DISABLED$line"
+            n=$((n + 1))
+        fi
+        out+=("$line")
+    done <<<"$crontab"
+    if [ "$n" = 0 ]; then
+        if grep -qF "$DISABLED" <<<"$crontab"; then echo "widget is already disabled"
+        else echo "no cron line runs the widget"
+        fi
+        return 0
+    fi
+    write_crontab "$(printf '%s\n' "${out[@]}")"
+    echo "widget disabled; --install enables it again"
+}
+
+do_uninstall() {
+    local crontab others dest
+    crontab=$(read_crontab)
+    others=$(other_lines "$crontab")
+    if [ "$others" != "$crontab" ]; then
+        write_crontab "$others"
+        echo "removed the widget cron line"
+    fi
+    dest=$(installed_path)
+    if [ -f "$dest" ] && [ ! -L "$dest" ] && head -n 3 "$dest" | grep -qF "$MARK"; then
+        rm -f "$dest"
+        echo "removed $dest"
+    fi
+}
+
 main() {
-    local print=0 mounts=() mount label temp name target=""
+    local print=0 mounts=() mount label temp name target="" action="" options=()
+    local target_set=0 given=0
     name=$(hostname -s 2>/dev/null || hostname)
     while [ $# -gt 0 ]; do
         case "$1" in
@@ -92,19 +257,50 @@ main() {
             --target)
                 [ $# -ge 2 ] || { echo "--target needs a widget identifier" >&2; return 2; }
                 target=$2
+                target_set=1
+                given=1
+                # --target '' is the shared widget: no --target in the cron line.
+                [ -z "$2" ] || options+=("$1" "$2")
                 shift
                 ;;
             --name)
                 [ $# -ge 2 ] || { echo "--name needs a title" >&2; return 2; }
                 name=$2
+                given=1
+                options+=("$1" "$2")
                 shift
+                ;;
+            --install|--uninstall|--disable)
+                [ -z "$action" ] || { echo "use one of --install, --uninstall, --disable" >&2; return 2; }
+                action=${1#--}
                 ;;
             --help|-h) usage; return 0 ;;
             -*) echo "unknown option: $1" >&2; return 2 ;;
-            *) mounts+=("$1") ;;
+            *) mounts+=("$1"); options+=("$1"); given=1 ;;
         esac
         shift
     done
+    if [ -n "$action" ] && [ "$print" = 1 ]; then
+        echo "--print does not go with --$action" >&2
+        return 2
+    fi
+    case "$action" in
+        install)
+            local mode=keep
+            [ "$given" = 0 ] || mode=replace
+            # Same default as setup-machine: this machine's own widget.
+            if [ "$target_set" = 0 ]; then
+                options=(--target "$(hostname -s 2>/dev/null || hostname)" "${options[@]}")
+            fi
+            do_install "$mode" "${options[@]}"
+            return
+            ;;
+        uninstall|disable)
+            [ "$given" = 0 ] || { echo "--$action takes no other arguments" >&2; return 2; }
+            "do_$action"
+            return
+            ;;
+    esac
     [ "${#mounts[@]}" -gt 0 ] || mounts=(/)
 
     # --text so a name like "100%" or "#1" is never read as progress or color.

@@ -1074,6 +1074,9 @@ def test_shellfish_widget_install_disable_enable_uninstall(tmp_path):
 
 
 def test_shellfish_widget_install_default_target_and_checks(tmp_path):
+    # Linux only, like the widget: macOS bash 3.2 has no empty arrays under set -u.
+    if not Path("/proc/stat").exists():
+        pytest.skip("reads /proc")
     env = widget_env(tmp_path)
     home = Path(env["HOME"])
     installed = home / ".local/bin/shellfish_widget.sh"
@@ -1095,11 +1098,10 @@ def test_shellfish_widget_install_default_target_and_checks(tmp_path):
     assert "no cron line" in widget(env, "--disable").stdout
 
     installed.unlink()
-    if Path("/proc/stat").exists():
-        assert widget(env, "--install").returncode == 0
-        assert (tmp_path / "crontab").read_text() == (
-            f"*/15 * * * * {installed} --target box1 >/dev/null 2>&1\n"
-        )
+    assert widget(env, "--install").returncode == 0
+    assert (tmp_path / "crontab").read_text() == (
+        f"*/15 * * * * {installed} --target box1 >/dev/null 2>&1\n"
+    )
 
 
 def test_shellfish_widget_help_lists_the_cron_options(tmp_path):

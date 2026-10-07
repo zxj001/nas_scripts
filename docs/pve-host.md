@@ -272,6 +272,9 @@ from the widget.
 
 Nothing is cloned onto the host. To update the widget script, rerun the step with a
 newer setup release; a different file at that path is left alone and reported.
+To turn the widget off on the host, run `shellfish_widget.sh --disable`; `--install`
+turns it back on (see
+[Install, disable, uninstall](08-shellfish-widgets.md#install-disable-uninstall)).
 
 ## Done checklist
 

@@ -4,7 +4,7 @@ Automated by `setup-machine --only shellfish` once the iPhone side is done.
 
 A Secure ShellFish widget on the iPhone Home Screen, Lock Screen, StandBy or Apple Watch
 shows this machine's name, CPU, CPU temperature, memory and disk usage. Cron pushes new
-values every 15 minutes.
+values every 15 minutes; `--minutes` changes that ([Install, disable, uninstall](#install-disable-uninstall)).
 
 Values are green, turn orange at 75% (70°C for Temp) and red at 90% (85°C).
 
@@ -82,6 +82,53 @@ scripts/shellfish_widget.sh --target pve1       # a specific widget (ShellFish P
 ```
 
 To show more disks or change how often it runs, edit the entry with `crontab -e`.
+
+`--help` prints all the options.
+
+## Install, disable, uninstall
+
+The script can manage its own cron line, without `setup-machine`:
+
+```
+scripts/shellfish_widget.sh --install                  # copy to ~/.local/bin, add the cron line, send once
+scripts/shellfish_widget.sh --install / /media/Drive1  # new arguments replace the cron line's
+shellfish_widget.sh --install --minutes 5              # send every 5 minutes instead of 15
+shellfish_widget.sh --status                           # installed? enabled? schedule, cron, integration
+shellfish_widget.sh --disable                          # turn the widget off on this machine
+shellfish_widget.sh --install                          # turn it back on, same arguments
+shellfish_widget.sh --uninstall                        # remove the cron line and the copy
+```
+
+- `--install` copies the script to `~/.local/bin/shellfish_widget.sh`, or to
+  `/usr/local/bin` as root, which are the same paths the setup step uses. It
+  checks `~/.shellfishrc`, `openssl`, `xxd`, `curl` and `crontab` before it
+  changes anything. Like the setup step, the line sends to the widget named after
+  the short hostname. `--target` picks a different widget and `--target ''` the
+  one shared widget.
+- `--install` with no other arguments also enables a disabled widget and keeps
+  its arguments. With arguments, it replaces the widget line.
+- `--minutes N` sets the time between runs, 15 by default. N must divide an hour
+  (1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30) or be whole hours that divide a day (60, 120,
+  180, 240, 360, 480, 720, 1440), so the runs stay evenly spaced. With no other
+  arguments, `--install --minutes N` changes only the schedule. iOS still limits how
+  often the widget redraws (see [Gotchas](#gotchas)).
+- `--install` enables and starts the `cron` service (with `sudo` when not root).
+  The crontab is saved on disk, so after a reboot or power loss cron runs the widget
+  again on its next scheduled run, with no login needed. The setup step checks the
+  same thing.
+- `--disable` comments the line out with a `#shellfish-disabled# ` prefix. Rerunning
+  `setup-machine` reports the step as `skipped` and leaves the widget off until
+  `--install` enables it again.
+- `--status` shows whether the widget is enabled, disabled or not installed, how often
+  it runs, its cron line, whether the installed copy matches this one, and whether
+  `~/.shellfishrc` and the `cron` service are ready. It exits 0 when the widget is
+  enabled and 3 otherwise.
+- `--uninstall` removes the widget lines from the crontab, disabled ones included, and
+  removes the installed copy. A later `setup-machine --only shellfish` installs it again.
+  Use `--disable` to keep a machine's widget off.
+
+The last update stays on the phone after `--disable` or `--uninstall`. Remove that
+machine's widget on the iPhone if you no longer want it.
 
 | Item | Source |
 |------|--------|

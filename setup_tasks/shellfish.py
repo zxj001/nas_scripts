@@ -4,6 +4,7 @@ The iPhone app writes ~/.shellfishrc when Shell Integration is installed; until
 then the task is manual. The widget script ships in this bundle and is copied to
 a stable path, so cron never depends on a checkout. Its widget function needs
 openssl, xxd and curl: without xxd it exits 0 but sends an unreadable payload.
+The cron service is enabled so the widget keeps updating after a reboot.
 """
 
 import os
@@ -18,6 +19,8 @@ from setup_tasks.common import apt
 TOOLS = ("openssl", "xxd", "curl", "crontab")
 # First line of our script; anything else at the target is an operator file.
 MARK = "# shellfish_widget.sh - "
+# Prefix shellfish_widget.sh --disable puts on the cron line; such a widget stays off.
+DISABLED = "#shellfish-disabled# "
 # Earlier setup versions ran the widget from a repository checkout. Such a line,
 # including one the operator gave mount points, --name or --target, is kept and
 # pointed at the installed copy, so its arguments survive.
@@ -82,6 +85,27 @@ def read_crontab(ctx):
     raise RuntimeError("cannot read crontab: " + output.stderr.strip())
 
 
+def disabled(ctx):
+    if not ctx.have("crontab"):
+        return False
+    lines = read_crontab(ctx).splitlines()
+    path = str(target(ctx))
+    return any(line.startswith(DISABLED) for line in lines) and not any(
+        runs(line, path) for line in lines
+    )
+
+
+def cron_running(ctx):
+    """The cron service starts at boot and runs now, so the widget line keeps
+    running after a reboot. Without systemd there is nothing to check."""
+    if not ctx.have("systemctl"):
+        return True
+    return all(
+        ctx.test("systemctl", check, "--quiet", "cron", codes=(0, 1, 3, 4))
+        for check in ("is-enabled", "is-active")
+    )
+
+
 def integration_missing(ctx):
     if (ctx.home / ".shellfishrc").exists():
         return None
@@ -100,6 +124,8 @@ def probe(ctx, task):
     missing = integration_missing(ctx)
     if missing:
         return missing
+    if disabled(ctx):
+        return ctx.result("skipped", "widget disabled", f"{target(ctx)} --install enables it again")
     path = target(ctx)
     if path.exists() or path.is_symlink():
         if path.is_symlink() or not path.is_file() or not ours(path):
@@ -119,6 +145,8 @@ def probe(ctx, task):
         return ctx.result("pending", "no crontab entry runs the widget")
     if widget_target(ctx) and any(untargeted(line, path) for line in lines):
         return ctx.result("pending", f"widget line has no --target {widget_target(ctx)}")
+    if not cron_running(ctx):
+        return ctx.result("pending", "the cron service is not enabled and running")
     return ctx.result("satisfied")
 
 
@@ -166,6 +194,8 @@ def apply(ctx, task):
             ctx.run("crontab", stream.name)
         finally:
             os.unlink(stream.name)
+    if not cron_running(ctx):
+        ctx.run("systemctl", "enable", "--now", "cron", privileged=True)
     ctx.run(str(path))
     ctx.warnings.append("Widget sent; add a ShellFish widget on the iPhone if you have not")
     return ctx.result("changed")

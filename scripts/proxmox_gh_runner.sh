@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
 # proxmox_gh_runner.sh - on the Proxmox host, create a Debian 13 VM that runs
-# one Nicu-Labs GitHub Actions runner (GITHUB_RUNNER.md). The VM is cloned
+# one GitHub Actions runner for an org or a repo (GITHUB_RUNNER.md). The VM is cloned
 # from a cloud-image template, named and sized by cloud-init, and set up by
 # running scripts/ghrunner_setup.sh inside it through the QEMU guest agent,
 # so it needs no SSH access and the token never lands in a file.
 #
-#   scripts/proxmox_gh_runner.sh create --name gh-runner-1    # asks for the token
-#   scripts/proxmox_gh_runner.sh create --name gh-runner-2 --cores 4 --memory 8192 \
-#       --disk 80 --labels heavy --token AAAA...
+#   scripts/proxmox_gh_runner.sh create --name gh-runner-1 --org Nicu-Labs  # asks for the token
+#   scripts/proxmox_gh_runner.sh create --name gh-runner-2 --repo OWNER/REPO
+#   scripts/proxmox_gh_runner.sh create --name gh-runner --count 3 --org Nicu-Labs
+#       # 3 new VMs gh-runner-N (the first free numbers), set up in parallel
+#   scripts/proxmox_gh_runner.sh create --name gh-runner-3 --org Nicu-Labs --cores 4 \
+#       --memory 8192 --disk 80 --labels heavy --token AAAA...
 #   scripts/proxmox_gh_runner.sh list                  # runner VMs and their checks
 #   scripts/proxmox_gh_runner.sh check --name gh-runner-1
 #   scripts/proxmox_gh_runner.sh destroy --name gh-runner-1   # unregister, delete VM
@@ -17,7 +20,8 @@
 # stopped (a half-built template is rebuilt, a half-configured clone is
 # finished), starts a stopped VM, and sets up or just checks its runner; on an
 # existing VM only the --cores/--memory/--disk you pass are applied, and disks
-# only grow. Missing host prerequisites are installed: curl, and the `snippets`
+# only grow. Before creating VMs it checks the host has the RAM to start them
+# and the disk for them, and warns when their full (thin) disks would not fit. Missing host prerequisites are installed: curl, and the `snippets`
 # content type on `local` (for the cloud-init that installs the guest agent).
 #
 # The OS: VMs are full clones of a template (VM 9100, built on first use) whose
@@ -25,7 +29,11 @@
 # template is a snapshot of that day's image; `template --rebuild` refreshes it
 # for VMs created later (runner setup updates packages in every VM anyway).
 #
-# Options: --name (VM name, which becomes the hostname and the runner name),
+# Options: --name (VM name, which becomes the hostname and the runner name;
+# with --count N, create makes N new VMs NAME-1, NAME-2, ..., skipping names
+# any VM in the cluster already has),
+# --org ORG or --repo OWNER/REPO (create needs one: where the runner
+# registers, every repo of an org or just one repo),
 # --token (registration token for create, removal token for destroy; also
 # $GHRUNNER_TOKEN, else asked for), --cores (2), --memory MB (4096), --disk GB
 # (40), --labels (extra runner labels), --storage (local-lvm), --bridge
@@ -39,10 +47,12 @@ TAG=gh-runner
 IMAGE_URL=https://cloud.debian.org/images/cloud/trixie/latest
 IMAGE=debian-13-genericcloud-amd64.qcow2
 SNIPPET=gh-runner-vendor.yaml
+MIN_FREE_MB=2048   # RAM left for the host after starting VMs
+NEW_VM_GB=4        # disk a new VM takes at first: Debian, Docker, the runner
 SETUP_URL=https://raw.githubusercontent.com/zxj001/nas_scripts/main/scripts/ghrunner_setup.sh
 
 usage() {
-    sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,43p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 die() {
@@ -92,6 +102,13 @@ vm_status() {
     qm status "$1" | awk '{ print $2 }'
 }
 
+# The name of every VM and container in the cluster, one per line (all of
+# them, not just this node's, so a new name is unique cluster-wide).
+vm_names() {
+    pvesh get /cluster/resources --type vm --output-format json | perl -MJSON::PP -e '
+        print "$_->{name}\n" for grep { defined $_->{name} } @{ decode_json(join "", <STDIN>) }'
+}
+
 has_tag() {
     qm config "$1" </dev/null | awk '/^tags:/ { print $2 }' | tr ';,' '\n' | grep -qx "$2"
 }
@@ -134,10 +151,30 @@ wait_for_agent() {
     die "VM $vmid has no guest agent after 10 minutes; check its console (qm terminal $vmid)"
 }
 
-# A token from --token, $GHRUNNER_TOKEN, or the terminal.
+# Where the runner registers, from --org ORG or --repo OWNER/REPO (a
+# https://github.com/ prefix is allowed). Only one of them may be given.
+set_url() {
+    local kind=$1 path=${2#https://github.com/}
+    path=${path%/}
+    [[ -z $URL ]] || die "give only one of --org and --repo"
+    case $kind in
+        org) [[ $path =~ ^[A-Za-z0-9-]+$ ]] || die "--org takes an org name, like Nicu-Labs" ;;
+        repo) [[ $path =~ ^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$ ]] || die "--repo takes OWNER/REPO" ;;
+    esac
+    URL=https://github.com/$path
+}
+
+# A token from --token, $GHRUNNER_TOKEN, or the terminal. The page that shows
+# it is the org's or repo's runners page; for destroy without --org/--repo
+# (which reads where the runner is registered) the hint is generic.
 get_token() {
-    local kind=$1 token=${TOKEN:-${GHRUNNER_TOKEN:-}}
-    local page=https://github.com/organizations/Nicu-Labs/settings/actions/runners
+    local kind=$1 token=${TOKEN:-${GHRUNNER_TOKEN:-}} path=${URL#https://github.com/}
+    local page="the org's or repo's Settings > Actions > Runners"
+    if [[ $path == */* ]]; then
+        page=https://github.com/$path/settings/actions/runners
+    elif [[ -n $path ]]; then
+        page=https://github.com/organizations/$path/settings/actions/runners
+    fi
     if [[ -z $token ]]; then
         { : </dev/tty; } 2>/dev/null || die "no $kind token; pass --token (see $page)"
         if [[ $kind == registration ]]; then
@@ -256,48 +293,141 @@ configure_vm() {
     has_tag "$vmid" "$TAG" || qm set "$vmid" --tags "$TAG" >/dev/null
 }
 
+# Clone (or finish, or resize) runner VM $1 and start it; prints its VM ID.
+prepare_vm() {
+    local name=$1 vmid
+    vmid=$(vm_id "$name")
+    if [[ -n $vmid ]]; then
+        if has_tag "$vmid" "$TAG"; then
+            echo "VM $vmid ($name) exists" >&2
+            configure_vm "$vmid" 0 >&2
+        elif has_tag "$vmid" "$TAG-template" && ! is_template "$vmid"; then
+            echo "VM $vmid ($name) was cloned but not configured; finishing it" >&2
+            configure_vm "$vmid" 1 >&2
+        else
+            die "VM $vmid is called $name but is not a runner VM (no $TAG tag)"
+        fi
+    else
+        cmd_template >&2
+        vmid=$(pvesh get /cluster/nextid)
+        echo "Creating VM $vmid ($name): $CORES cores, $MEMORY MB, ${DISK} GB" >&2
+        qm clone "$TEMPLATE_ID" "$vmid" --name "$name" --full 1 --storage "$STORAGE" >&2
+        configure_vm "$vmid" 1 >&2
+    fi
+    [[ $(vm_status "$vmid") == running ]] || qm start "$vmid" >&2
+    echo "$vmid"
+}
+
+# Before cloning, check the host has room for the VMs that will be started.
+# RAM: Proxmox starts VMs past the host's memory, and the OOM killer then
+# kills VMs, so the memory of every VM to start must fit in MemAvailable,
+# less MIN_FREE_MB for the host. Disk: VM disks are thin, so a new VM only
+# takes about NEW_VM_GB at first, but a thin pool that fills up stops every
+# VM on it; it must have room for the new VMs now, and a warning says when
+# their full disks would not fit.
+check_capacity() {
+    local new=0 start=0 name vmid avail_mb need_mb avail_gb
+    for name in "$@"; do
+        vmid=$(vm_id "$name")
+        if [[ -z $vmid ]]; then
+            new=$((new + 1)) start=$((start + 1))
+        elif [[ $(vm_status "$vmid") != running ]]; then
+            start=$((start + 1))
+        fi
+    done
+    avail_mb=$(awk '/^MemAvailable:/ { print int($2 / 1024) }' /proc/meminfo)
+    need_mb=$((start * MEMORY))
+    if ((need_mb > avail_mb - MIN_FREE_MB)); then
+        die "starting $start VMs needs $need_mb MB of RAM, but the host has $avail_mb MB available (keeping $MIN_FREE_MB MB for itself); use a smaller --count or --memory"
+    fi
+    ((new)) || return 0
+    avail_gb=$(pvesm status --storage "$STORAGE" | awk 'NR > 1 { print int($6 / 1048576) }')
+    if ((new * NEW_VM_GB > avail_gb)); then
+        die "$new new VMs need about $((new * NEW_VM_GB)) GB on $STORAGE at first, but it has $avail_gb GB free"
+    fi
+    if ((new * DISK > avail_gb)); then
+        echo "Warning: $new VMs with ${DISK} GB disks can grow to $((new * DISK)) GB, but $STORAGE has $avail_gb GB free." >&2
+        echo "  Disks are thin, so this works until they fill up; a full pool stops every VM on it." >&2
+        echo "  Runner cleanup keeps each VM under 80% of its disk; watch with: pvesm status" >&2
+    fi
+}
+
+# Set up the runner in VM $1 (named $2) with registration token $3.
+install_runner() {
+    local vmid=$1 name=$2 token=$3
+    # shellcheck disable=SC2016  # expanded by bash in the VM
+    guest "$vmid" stdin bash -c 'IFS= read -r GHRUNNER_TOKEN; export GHRUNNER_TOKEN
+        exec bash /root/ghrunner_setup.sh install --name "$1" --"$2" "$3" ${4:+--labels "$4"}' \
+        _ "$name" "$SCOPE" "$URL" "$LABELS" <<<"$token"
+}
+
+# One runner VM called --name (or, if it exists, finished and checked), or
+# with --count N, N new ones called NAME-1, NAME-2, ... skipping every name a
+# VM in the cluster already has. VMs are cloned one at a time (clones of one template cannot run
+# side by side), boot together, and then have their runners set up in
+# parallel, all with the one registration token.
 cmd_create() {
     [[ -n $NAME ]] || die "create needs --name"
+    [[ -n $URL ]] || die "create needs --org ORG (a runner for every repo of the org) or --repo OWNER/REPO"
     [[ $NAME =~ ^[a-z0-9][a-z0-9-]*$ ]] || die "--name must be a hostname: lowercase letters, digits, -"
     [[ -n $SSH_KEYS ]] || die "no /root/.ssh/authorized_keys; pass --ssh-keys FILE (the VM's only login is SSH with a key)"
     [[ -f $SSH_KEYS ]] || die "no ssh keys file $SSH_KEYS"
     # Lines may start with options such as restrict or from="...".
     grep -qE '(ssh-(ed25519|rsa)|ecdsa-sha2-|sk-(ssh|ecdsa)-)' "$SSH_KEYS" || die "$SSH_KEYS has no public keys"
-    local vmid token report
-    vmid=$(vm_id "$NAME")
-    if [[ -n $vmid ]]; then
-        if has_tag "$vmid" "$TAG"; then
-            echo "VM $vmid ($NAME) exists"
-            configure_vm "$vmid" 0
-        elif has_tag "$vmid" "$TAG-template" && ! is_template "$vmid"; then
-            echo "VM $vmid ($NAME) was cloned but not configured; finishing it"
-            configure_vm "$vmid" 1
-        else
-            die "VM $vmid is called $NAME but is not a runner VM (no $TAG tag)"
-        fi
+    local names=() vmids=() todo=() i name vmid report token failed=0
+    local -A pids=() taken=()
+    if ((COUNT_SET)); then
+        while read -r name; do taken[$name]=1; done < <(vm_names)
+        for ((i = 1; ${#names[@]} < COUNT; i++)); do
+            [[ -n ${taken[$NAME-$i]:-} ]] || names+=("$NAME-$i")
+        done
+        echo "Creating ${names[*]}"
     else
-        cmd_template
-        vmid=$(pvesh get /cluster/nextid)
-        echo "Creating VM $vmid ($NAME): $CORES cores, $MEMORY MB, ${DISK} GB"
-        qm clone "$TEMPLATE_ID" "$vmid" --name "$NAME" --full 1 --storage "$STORAGE"
-        configure_vm "$vmid" 1
+        names=("$NAME")
     fi
-    [[ $(vm_status "$vmid") == running ]] || qm start "$vmid"
-    wait_for_agent "$vmid"
-    guest "$vmid" cloud-init status --wait >/dev/null || true
+    check_host
+    check_capacity "${names[@]}"
+    for name in "${names[@]}"; do
+        vmid=$(prepare_vm "$name")   # on its own line so set -e stops on a failure
+        vmids+=("$vmid")
+    done
 
-    push_setup "$vmid"
-    if report=$(guest "$vmid" bash /root/ghrunner_setup.sh check --name "$NAME" 2>/dev/null); then
-        echo "$report"
-        echo "VM $vmid ($NAME): runner already set up"
-        return 0
-    fi
+    # Wait for every VM to boot, and keep the ones whose runner is not set up.
+    for i in "${!names[@]}"; do
+        name=${names[i]} vmid=${vmids[i]}
+        wait_for_agent "$vmid"
+        guest "$vmid" cloud-init status --wait >/dev/null || true
+        push_setup "$vmid"
+        if report=$(guest "$vmid" bash /root/ghrunner_setup.sh check --name "$name" --"$SCOPE" "$URL" 2>/dev/null); then
+            echo "$report"
+            echo "VM $vmid ($name): runner already set up"
+        else
+            todo+=("$i")
+        fi
+    done
+    ((${#todo[@]})) || return 0
+
     token=$(get_token registration)
-    echo "Setting up the runner in VM $vmid (a few minutes)"
-    # shellcheck disable=SC2016  # expanded by bash in the VM
-    guest "$vmid" stdin bash -c 'IFS= read -r GHRUNNER_TOKEN; export GHRUNNER_TOKEN
-        exec bash /root/ghrunner_setup.sh install --name "$1" ${2:+--labels "$2"}' \
-        _ "$NAME" "$LABELS" <<<"$token"
+    if ((${#todo[@]} == 1)); then
+        i=${todo[0]}
+        echo "Setting up the runner in VM ${vmids[i]} (${names[i]}) (a few minutes)"
+        install_runner "${vmids[i]}" "${names[i]}" "$token"
+        return
+    fi
+    echo "Setting up ${#todo[@]} runners in parallel (a few minutes; output appears as each finishes)"
+    for i in "${todo[@]}"; do
+        name=${names[i]}
+        install_runner "${vmids[i]}" "$name" "$token" > >(sed "s/^/[$name] /") 2>&1 &
+        pids[$name]=$!
+    done
+    for name in "${!pids[@]}"; do
+        if ! wait "${pids[$name]}"; then
+            echo "[$name] setup failed; retry with: $0 create --name $name --$SCOPE ${URL#https://github.com/}" >&2
+            failed=$((failed + 1))
+        fi
+    done
+    sleep 1   # let the sed output processes flush
+    ((failed == 0)) || die "$failed of ${#todo[@]} runners failed to set up"
 }
 
 # Every runner VM on this node: ID, name, state, and the runner check.
@@ -356,12 +486,14 @@ cmd_destroy() {
 
 COMMAND=${1:-}
 [[ -n $COMMAND ]] && shift
-NAME='' TOKEN='' CORES=2 MEMORY=4096 DISK=40 LABELS='' STORAGE=local-lvm BRIDGE=vmbr0
+NAME='' URL='' SCOPE='' TOKEN='' COUNT=1 COUNT_SET=0 CORES=2 MEMORY=4096 DISK=40 LABELS='' STORAGE=local-lvm BRIDGE=vmbr0
 SSH_KEYS='' TEMPLATE_ID=9100 YES=0 REBUILD=0 CORES_SET=0 MEMORY_SET=0 DISK_SET=0
 while (($#)); do
     case $1 in
         --name) NAME=$2; shift 2 ;;
+        --org|--repo) SCOPE=${1#--}; set_url "$SCOPE" "$2"; shift 2 ;;
         --token) TOKEN=$2; shift 2 ;;
+        --count) COUNT=$2; COUNT_SET=1; shift 2 ;;
         --cores) CORES=$2; CORES_SET=1; shift 2 ;;
         --memory) MEMORY=$2; MEMORY_SET=1; shift 2 ;;
         --disk) DISK=${2%G}; DISK_SET=1; shift 2 ;;
@@ -381,9 +513,10 @@ if [[ -z $SSH_KEYS ]]; then
     [[ -f $SSH_KEYS ]] || SSH_KEYS=''
 fi
 case $COMMAND in -h|--help|'') usage; exit 0 ;; esac
-for n in "$CORES" "$MEMORY" "$DISK" "$TEMPLATE_ID"; do
-    [[ $n =~ ^[1-9][0-9]*$ ]] || die "--cores, --memory, --disk and --template-id take whole numbers"
+for n in "$COUNT" "$CORES" "$MEMORY" "$DISK" "$TEMPLATE_ID"; do
+    [[ $n =~ ^[1-9][0-9]*$ ]] || die "--count, --cores, --memory, --disk and --template-id take whole numbers"
 done
+((!COUNT_SET)) || [[ $COMMAND == create ]] || die "--count only works with create"
 [[ $EUID -eq 0 ]] || die "run this as root on the Proxmox host"
 command -v qm >/dev/null || die "qm not found; run this on the Proxmox host"
 

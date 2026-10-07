@@ -12,11 +12,11 @@
 #
 #   # fresh VM: token from GitHub > Settings > Actions > Runners > New runner
 #   curl -fsSLO https://raw.githubusercontent.com/zxj001/nas_scripts/main/scripts/ghrunner_setup.sh
-#   bash ghrunner_setup.sh install --token AAAA...
+#   bash ghrunner_setup.sh install --org Nicu-Labs --token AAAA...
 #
-#   scripts/ghrunner_setup.sh install                    # asks for the token
-#   scripts/ghrunner_setup.sh install --name build-vm-1 --labels docker
-#   scripts/ghrunner_setup.sh install --url https://github.com/OWNER/REPO
+#   scripts/ghrunner_setup.sh install --org Nicu-Labs    # asks for the token
+#   scripts/ghrunner_setup.sh install --org Nicu-Labs --name build-vm-1 --labels docker
+#   scripts/ghrunner_setup.sh install --repo OWNER/REPO  # a runner for one repo
 #   scripts/ghrunner_setup.sh check                 # every runner here: registered,
 #                                                   # running, docker, timer, disk
 #   scripts/ghrunner_setup.sh status    --name build-vm-1
@@ -34,19 +34,20 @@
 # journal if that is not enough. Set both in
 # /etc/default/ghrunner-cleanup; `journalctl -u ghrunner-cleanup` shows runs.
 #
-# Options: --url (default: https://github.com/Nicu-Labs, the org; a repo URL
-# makes a runner for that repo only), --name (default: hostname), --user
+# Options: --org ORG or --repo OWNER/REPO (where the runner registers, every
+# repo of an org or just one repo; install needs one of them, other commands
+# use where the runner is registered), --name (default: hostname), --user
 # (runner account; default: you, or `runner` when run as root), --dir
 # (default: ~USER/actions-runner-NAME), --labels (comma separated, added to
 # self-hosted,linux,ARCH), --token (a registration or removal token from the
 # runners page; also read from $GHRUNNER_TOKEN, asked for when missing, or as a
-# last resort requested with `gh`, which needs admin:org).
+# last resort requested with `gh`, which needs admin:org or repo access).
 set -euo pipefail
 # dockerd, ldconfig and usermod live here, off a normal Debian user's PATH.
 PATH=$PATH:/usr/sbin:/sbin
 
 usage() {
-    sed -n '2,43p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,45p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 die() {
@@ -156,12 +157,25 @@ ensure_docker() {
     fi
 }
 
+# Where the runner registers, from --org ORG or --repo OWNER/REPO (a
+# https://github.com/ prefix is allowed). Only one of them may be given.
+set_url() {
+    local kind=$1 path=${2#https://github.com/}
+    path=${path%/}
+    ((!URL_SET)) || die "give only one of --org and --repo"
+    case $kind in
+        org) [[ $path =~ ^[A-Za-z0-9-]+$ ]] || die "--org takes an org name, like Nicu-Labs" ;;
+        repo) [[ $path =~ ^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$ ]] || die "--repo takes OWNER/REPO" ;;
+    esac
+    URL=https://github.com/$path URL_SET=1
+}
+
 # https://github.com/OWNER -> orgs/OWNER, https://github.com/OWNER/REPO -> repos/OWNER/REPO
 api_scope() {
     local path=${URL#https://github.com/}
     path=${path%/}
     case $path in
-        */*/*|'') die "--url must be https://github.com/OWNER or https://github.com/OWNER/REPO" ;;
+        */*/*|'') die "needs --org ORG or --repo OWNER/REPO" ;;
         */*) echo "repos/$path" ;;
         *) echo "orgs/$path" ;;
     esac
@@ -193,7 +207,7 @@ get_token() {
     fi
     if [[ -z $token ]] && command -v gh >/dev/null; then
         token=$(gh api -X POST "$(api_scope)/actions/runners/$kind-token" --jq .token) \
-            || die "could not get a $kind token from gh (needs admin:org); pass --token"
+            || die "could not get a $kind token from gh (needs admin:org, or admin on the repo); pass --token"
     fi
     [[ -n $token ]] || die "no $kind token; pass --token (see $(runners_page))"
     echo "$token"
@@ -458,7 +472,7 @@ check_runner() {
         url=$(runner_file .runner | grep -o '"gitHubUrl": *"[^"]*"' | cut -d'"' -f4)
         name=$(runner_file .runner | grep -o '"agentName": *"[^"]*"' | cut -d'"' -f4)
         ok "registered as $name with $url"
-        [[ -z $URL || $url == "$URL" ]] || bad "registered with $url, not $URL"
+        ((!URL_SET)) || [[ $url == "$URL" ]] || bad "registered with $url, not $URL"
     else
         bad "not registered with GitHub"
     fi
@@ -546,7 +560,7 @@ cmd_check() {
     fi
     mapfile -t dirs < <(runner_dirs)
     ((${#dirs[@]})) || die "no runner services on this machine"
-    URL=''
+    URL_SET=0
     for dir in "${dirs[@]}"; do
         DIR=$dir NAME=${dir##*/actions-runner-}
         RUNNER_USER=$(stat -c %U "$dir")
@@ -568,6 +582,9 @@ cmd_unregister() {
         echo "Runner $NAME is not registered here; nothing to remove from GitHub"
         return 0
     fi
+    if ((!URL_SET)); then
+        URL=$(runner_file .runner | grep -o '"gitHubUrl": *"[^"]*"' | cut -d'"' -f4)
+    fi
     token=$(get_token remove)
     if service_installed; then cmd_uninstall; fi
     (cd "$DIR" && as_runner ./config.sh remove --token "$token")
@@ -575,10 +592,11 @@ cmd_unregister() {
 
 COMMAND=${1:-}
 [[ -n $COMMAND ]] && shift
-URL=https://github.com/Nicu-Labs NAME=$(hostname) DIR='' LABELS='' TOKEN='' RUNNER_USER='' DRY_RUN=0 NAME_SET=0
+URL='' NAME=$(hostname) DIR='' LABELS='' TOKEN='' RUNNER_USER='' DRY_RUN=0 NAME_SET=0
+URL_SET=0
 while (($#)); do
     case $1 in
-        --url) URL=$2; shift 2 ;;
+        --org|--repo) set_url "${1#--}" "$2"; shift 2 ;;
         --name) NAME=$2; NAME_SET=1; shift 2 ;;
         --dir) DIR=$2; shift 2 ;;
         --user) RUNNER_USER=$2; shift 2 ;;
@@ -593,6 +611,8 @@ if [[ -z $RUNNER_USER ]]; then
     if [[ $EUID -eq 0 ]]; then RUNNER_USER=runner; else RUNNER_USER=$(id -un); fi
 fi
 [[ $RUNNER_USER != root ]] || die "the runner cannot run as root; pick another --user"
+[[ $COMMAND != install ]] || ((URL_SET)) \
+    || die "install needs --org ORG (a runner for every repo of the org) or --repo OWNER/REPO"
 case $COMMAND in
     install|start|stop|status|uninstall|unregister|check|cleanup)
         command -v systemctl >/dev/null || die "this needs systemd"

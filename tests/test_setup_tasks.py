@@ -579,11 +579,12 @@ def test_shellfish_widget_print_layout_and_colors(tmp_path):
     assert result.returncode == 0, result.stderr
     color = r"#[0-9a-f]{6}"
     pattern = (
-        rf"--target pve1 server\.rack --text NAS cpu\.fill {color} \d+% foreground CPU "
-        rf"(thermometer\.medium {color} \d+°C foreground Temp )?"
-        rf"memorychip {color} \d+% foreground Mem "
-        rf"internaldrive {color} \d+% foreground Disk "
-        rf"internaldrive {color} \d+% foreground {re.escape(tmp_path.name)}"
+        rf"--target pve1 server\.rack --text NAS "
+        rf"--text \\n foreground cpu\.fill CPU {color} (\d+%) --text  \1 "
+        rf"(--text \\n foreground thermometer\.medium Temp {color} --text  \d+°C )?"
+        rf"--text \\n foreground memorychip Mem {color} (\d+%) --text  \3 "
+        rf"--text \\n foreground internaldrive Disk {color} (\d+%) --text  \4 "
+        rf"--text \\n foreground internaldrive {re.escape(tmp_path.name)} {color} (\d+%) --text  \5"
     )
     assert re.fullmatch(pattern, result.stdout.strip()), result.stdout
     definitions = script.read_text().removesuffix('main "$@"\n')
@@ -965,3 +966,180 @@ def test_mac_installs_google_chrome_when_no_chromium_browser(tmp_path):
     task = Task("chromium", "")
     assert browser.probe(ctx, task).outcome == "pending"
     assert browser.apply(ctx, task).outcome == "changed"
+
+
+def test_shellfish_leaves_a_disabled_widget_off(tmp_path):
+    line = "#shellfish-disabled# */15 * * * * /x/.local/bin/shellfish_widget.sh >/dev/null 2>&1"
+    ctx, written = shellfish_fixture(tmp_path, crontab=(0, "0 3 * * * backup\n" + line + "\n"))
+    (ctx.home / ".shellfishrc").write_text("")
+    task = Task("shellfish", "")
+    result = shellfish.probe(ctx, task)
+    assert result.outcome == "skipped" and "--install" in result.action
+    assert shellfish.apply(ctx, task).outcome == "skipped"
+    assert written == [] and not shellfish.target(ctx).exists()
+
+
+def widget_env(tmp_path):
+    """HOME, a fake crontab kept in a file, and stub tools for the widget script."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    stubs = {
+        "openssl": "",
+        "xxd": "",
+        "curl": "",
+        "id": "echo 1000",
+        "hostname": "echo box1",
+        "sudo": '"$@"',
+        "systemctl": f"""
+echo "$*" >>{tmp_path}/systemctl.log
+case "$1" in
+  cat) exit 0 ;;
+  is-enabled|is-active)
+    [ -f {tmp_path}/cron-on ] || exit 1
+    [ "$2" = --quiet ] || {{ [ "$1" = is-enabled ] && echo enabled || echo active; }} ;;
+  enable) touch {tmp_path}/cron-on ;;
+esac""",
+        "crontab": f"""
+tab={tmp_path}/crontab
+case "$1" in
+  -l) [ -f "$tab" ] || {{ echo "no crontab for fixture" >&2; exit 1; }}; cat "$tab" ;;
+  -) cat >"$tab" ;;
+esac""",
+    }
+    for name, body in stubs.items():
+        (bin_dir / name).write_text("#!/bin/sh\n" + body + "\n")
+        (bin_dir / name).chmod(0o755)
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".shellfishrc").write_text('widget() { echo "$*" >>"$HOME/sent"; }\n')
+    return {"PATH": f"{bin_dir}:/usr/bin:/bin", "HOME": str(home)}
+
+
+def widget(env, *args):
+    script = Path(__file__).resolve().parents[1] / "scripts/shellfish_widget.sh"
+    return subprocess.run([str(script), *args], env=env, text=True, capture_output=True)
+
+
+def test_shellfish_widget_install_disable_enable_uninstall(tmp_path):
+    if not Path("/proc/stat").exists():
+        pytest.skip("reads /proc")
+    env = widget_env(tmp_path)
+    home = Path(env["HOME"])
+    tab = tmp_path / "crontab"
+    tab.write_text("0 3 * * * backup\n")
+    installed = home / ".local/bin/shellfish_widget.sh"
+    live = f"*/15 * * * * {installed} --target box1 / /media/50\\% >/dev/null 2>&1"
+
+    result = widget(env, "--install", "/", "/media/50%")
+    assert result.returncode == 0, result.stderr
+    assert os.access(installed, os.X_OK)
+    assert tab.read_text().splitlines() == ["0 3 * * * backup", live]
+    assert (home / "sent").read_text().startswith("--target box1 server.rack --text box1 ")
+    assert " 50% " in (home / "sent").read_text()
+    # cron has to start at boot for the line to keep running.
+    assert "enable --now cron" in (tmp_path / "systemctl.log").read_text()
+    assert "enabled the cron service" in result.stdout
+    status = widget(env, "--status")
+    assert status.returncode == 0, status.stderr
+    assert "widget:       enabled" in status.stdout
+    assert "runs:         every 15 minutes" in status.stdout
+    assert f"script:       {installed}\n" in status.stdout
+    assert "cron service: cron enabled, active" in status.stdout
+
+    assert widget(env, "--disable").returncode == 0
+    assert tab.read_text().splitlines() == ["0 3 * * * backup", "#shellfish-disabled# " + live]
+    assert "already disabled" in widget(env, "--disable").stdout
+    status = widget(env, "--status")
+    assert status.returncode == 3 and "widget:       disabled" in status.stdout
+
+    # --install with no arguments enables the line and keeps its arguments.
+    assert widget(env, "--install").returncode == 0
+    assert tab.read_text().splitlines() == ["0 3 * * * backup", live]
+
+    # --minutes alone changes only the schedule.
+    assert widget(env, "--install", "--minutes", "5").returncode == 0
+    assert tab.read_text().splitlines() == ["0 3 * * * backup", "*/5" + live.removeprefix("*/15")]
+    assert widget(env, "--install", "--minutes", "120").returncode == 0
+    assert "every 2 hours" in widget(env, "--status").stdout
+    assert tab.read_text().splitlines() == [
+        "0 3 * * * backup",
+        "0 */2 * * *" + live.removeprefix("*/15 * * * *"),
+    ]
+    assert widget(env, "--install", "--minutes", "1440", "/").returncode == 0
+    assert tab.read_text().splitlines() == [
+        "0 3 * * * backup",
+        f"0 0 * * * {installed} --target box1 / >/dev/null 2>&1",
+    ]
+    assert (tmp_path / "systemctl.log").read_text().count("enable --now") == 1
+
+    # New arguments replace the line; --target '' is the shared widget.
+    assert widget(env, "--install", "--target", "").returncode == 0
+    assert tab.read_text().splitlines() == [
+        "0 3 * * * backup",
+        f"*/15 * * * * {installed} >/dev/null 2>&1",
+    ]
+
+    assert widget(env, "--uninstall").returncode == 0
+    assert tab.read_text().splitlines() == ["0 3 * * * backup"]
+    assert not installed.exists()
+    status = widget(env, "--status")
+    assert status.returncode == 3 and "widget:       not installed" in status.stdout
+
+
+def test_shellfish_widget_install_default_target_and_checks(tmp_path):
+    # Linux only, like the widget: macOS bash 3.2 has no empty arrays under set -u.
+    if not Path("/proc/stat").exists():
+        pytest.skip("reads /proc")
+    env = widget_env(tmp_path)
+    home = Path(env["HOME"])
+    installed = home / ".local/bin/shellfish_widget.sh"
+    installed.parent.mkdir(parents=True)
+    installed.write_text("#!/bin/sh\necho mine\n")
+    result = widget(env, "--install")
+    assert result.returncode == 1 and "not this script" in result.stderr
+    assert installed.read_text() == "#!/bin/sh\necho mine\n"
+    assert not (tmp_path / "crontab").exists()
+
+    assert widget(env, "--disable", "/").returncode == 2
+    assert widget(env, "--install", "--uninstall").returncode == 2
+    assert widget(env, "--install", "--print").returncode == 2
+    for minutes in ("0", "7", "45", "90", "2880", "x", ""):
+        result = widget(env, "--install", "--minutes", minutes)
+        assert result.returncode == 2 and "--minutes takes" in result.stderr
+    assert widget(env, "--minutes", "5").returncode == 2
+    assert widget(env, "--disable", "--minutes", "5").returncode == 2
+    assert widget(env, "--status", "/").returncode == 2
+    assert "no cron line" in widget(env, "--disable").stdout
+
+    installed.unlink()
+    assert widget(env, "--install").returncode == 0
+    assert (tmp_path / "crontab").read_text() == (
+        f"*/15 * * * * {installed} --target box1 >/dev/null 2>&1\n"
+    )
+
+
+def test_shellfish_widget_help_lists_the_cron_options(tmp_path):
+    result = widget(widget_env(tmp_path), "--help")
+    assert result.returncode == 0
+    for option in ("--install", "--minutes", "--disable", "--uninstall", "--status", "--help"):
+        assert option in result.stdout
+    assert "set -euo" not in result.stdout
+
+
+def test_shellfish_enables_cron_so_the_widget_survives_a_reboot(tmp_path):
+    ctx, written = shellfish_fixture(tmp_path)
+    (ctx.home / ".shellfishrc").write_text("")
+    ctx.outputs[("have", "systemctl")] = True
+    for check in ("is-enabled", "is-active"):
+        ctx.outputs[("systemctl", check, "--quiet", "cron")] = (1, "")
+    ctx.outputs[("systemctl", "enable", "--now", "cron")] = (0, "")
+    task = Task("shellfish", "")
+    shellfish.install(shellfish.target(ctx), shellfish.bundled())
+    ctx.outputs[("crontab", "-l")] = (0, shellfish.cron_line(shellfish.target(ctx)) + "\n")
+    result = shellfish.probe(ctx, task)
+    assert result.outcome == "pending" and "cron service" in result.reason
+    assert shellfish.apply(ctx, task).outcome == "changed"
+    assert (("systemctl", "enable", "--now", "cron"), {"privileged": True}) in ctx.calls
+    for check in ("is-enabled", "is-active"):
+        ctx.outputs[("systemctl", check, "--quiet", "cron")] = (0, "")
+    assert shellfish.probe(ctx, task).outcome == "satisfied"

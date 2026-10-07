@@ -93,6 +93,7 @@ The script can manage its own cron line, without `setup-machine`:
 scripts/shellfish_widget.sh --install                  # copy to ~/.local/bin, add the cron line, send once
 scripts/shellfish_widget.sh --install / /media/Drive1  # new arguments replace the cron line's
 shellfish_widget.sh --install --minutes 5              # send every 5 minutes instead of 15
+shellfish_widget.sh --status                           # installed? enabled? schedule, cron, integration
 shellfish_widget.sh --disable                          # turn the widget off on this machine
 shellfish_widget.sh --install                          # turn it back on, same arguments
 shellfish_widget.sh --uninstall                        # remove the cron line and the copy
@@ -118,6 +119,10 @@ shellfish_widget.sh --uninstall                        # remove the cron line an
 - `--disable` comments the line out with a `#shellfish-disabled# ` prefix. Rerunning
   `setup-machine` reports the step as `skipped` and leaves the widget off until
   `--install` enables it again.
+- `--status` shows whether the widget is enabled, disabled or not installed, how often
+  it runs, its cron line, whether the installed copy matches this one, and whether
+  `~/.shellfishrc` and the `cron` service are ready. It exits 0 when the widget is
+  enabled and 3 otherwise.
 - `--uninstall` removes the widget lines from the crontab, disabled ones included, and
   removes the installed copy. A later `setup-machine --only shellfish` installs it again.
   Use `--disable` to keep a machine's widget off.

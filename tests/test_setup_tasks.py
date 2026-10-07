@@ -994,7 +994,9 @@ def widget_env(tmp_path):
 echo "$*" >>{tmp_path}/systemctl.log
 case "$1" in
   cat) exit 0 ;;
-  is-enabled|is-active) [ -f {tmp_path}/cron-on ] ;;
+  is-enabled|is-active)
+    [ -f {tmp_path}/cron-on ] || exit 1
+    [ "$2" = --quiet ] || {{ [ "$1" = is-enabled ] && echo enabled || echo active; }} ;;
   enable) touch {tmp_path}/cron-on ;;
 esac""",
         "crontab": f"""
@@ -1037,10 +1039,18 @@ def test_shellfish_widget_install_disable_enable_uninstall(tmp_path):
     # cron has to start at boot for the line to keep running.
     assert "enable --now cron" in (tmp_path / "systemctl.log").read_text()
     assert "enabled the cron service" in result.stdout
+    status = widget(env, "--status")
+    assert status.returncode == 0, status.stderr
+    assert "widget:       enabled" in status.stdout
+    assert "runs:         every 15 minutes" in status.stdout
+    assert f"script:       {installed}\n" in status.stdout
+    assert "cron service: cron enabled, active" in status.stdout
 
     assert widget(env, "--disable").returncode == 0
     assert tab.read_text().splitlines() == ["0 3 * * * backup", "#shellfish-disabled# " + live]
     assert "already disabled" in widget(env, "--disable").stdout
+    status = widget(env, "--status")
+    assert status.returncode == 3 and "widget:       disabled" in status.stdout
 
     # --install with no arguments enables the line and keeps its arguments.
     assert widget(env, "--install").returncode == 0
@@ -1050,6 +1060,7 @@ def test_shellfish_widget_install_disable_enable_uninstall(tmp_path):
     assert widget(env, "--install", "--minutes", "5").returncode == 0
     assert tab.read_text().splitlines() == ["0 3 * * * backup", "*/5" + live.removeprefix("*/15")]
     assert widget(env, "--install", "--minutes", "120").returncode == 0
+    assert "every 2 hours" in widget(env, "--status").stdout
     assert tab.read_text().splitlines() == [
         "0 3 * * * backup",
         "0 */2 * * *" + live.removeprefix("*/15 * * * *"),
@@ -1071,6 +1082,8 @@ def test_shellfish_widget_install_disable_enable_uninstall(tmp_path):
     assert widget(env, "--uninstall").returncode == 0
     assert tab.read_text().splitlines() == ["0 3 * * * backup"]
     assert not installed.exists()
+    status = widget(env, "--status")
+    assert status.returncode == 3 and "widget:       not installed" in status.stdout
 
 
 def test_shellfish_widget_install_default_target_and_checks(tmp_path):
@@ -1095,6 +1108,7 @@ def test_shellfish_widget_install_default_target_and_checks(tmp_path):
         assert result.returncode == 2 and "--minutes takes" in result.stderr
     assert widget(env, "--minutes", "5").returncode == 2
     assert widget(env, "--disable", "--minutes", "5").returncode == 2
+    assert widget(env, "--status", "/").returncode == 2
     assert "no cron line" in widget(env, "--disable").stdout
 
     installed.unlink()
@@ -1107,7 +1121,7 @@ def test_shellfish_widget_install_default_target_and_checks(tmp_path):
 def test_shellfish_widget_help_lists_the_cron_options(tmp_path):
     result = widget(widget_env(tmp_path), "--help")
     assert result.returncode == 0
-    for option in ("--install", "--minutes", "--disable", "--uninstall", "--print", "--help"):
+    for option in ("--install", "--minutes", "--disable", "--uninstall", "--status", "--help"):
         assert option in result.stdout
     assert "set -euo" not in result.stdout
 

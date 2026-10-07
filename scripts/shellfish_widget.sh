@@ -27,6 +27,9 @@
 #       until --install enables it again.
 #   --uninstall  remove the cron line and the installed copy. setup-machine
 #       --only shellfish puts both back; use --disable to keep it off.
+#   --status     show whether the widget is installed, enabled or disabled,
+#       its cron line, and whether cron and Shell Integration are ready.
+#       Exits 0 when enabled, 3 when disabled or not installed.
 #
 # setup-machine --only shellfish also installs it. Cron shells do not read
 # ~/.bashrc past its interactive guard, so ~/.shellfishrc is sourced here.
@@ -281,6 +284,56 @@ do_disable() {
     echo "widget disabled; --install enables it again"
 }
 
+# "every 15 minutes" for a schedule cron_line writes, else the raw fields.
+describe_schedule() {
+    local n
+    case "$1" in
+        "* * * * *") echo "every minute" ;;
+        "*/"*" * * * *") n=${1#\*/}; echo "every ${n%% *} minutes" ;;
+        "0 * * * *") echo "every hour" ;;
+        "0 0 * * *") echo "once a day" ;;
+        "0 */"*" * * *") n=${1#0 \*/}; echo "every ${n%% *} hours" ;;
+        *) echo "cron schedule: $1" ;;
+    esac
+}
+
+do_status() {
+    local crontab line dest live=() off=() unit state="enabled"
+    dest=$(installed_path)
+    crontab=$(read_crontab)
+    while IFS= read -r line; do
+        is_widget_line "$line" || continue
+        if [ "${line#"$DISABLED"}" = "$line" ]; then live+=("$line"); else off+=("${line#"$DISABLED"}"); fi
+    done <<<"$crontab"
+    if [ "${#live[@]}" -gt 0 ]; then state=enabled
+    elif [ "${#off[@]}" -gt 0 ]; then state="disabled (--install enables it)"
+    else state="not installed (--install installs it)"
+    fi
+    echo "widget:       $state"
+    for line in ${live[@]+"${live[@]}"} ${off[@]+"${off[@]}"}; do
+        echo "runs:         $(describe_schedule "$(awk '{ print $1, $2, $3, $4, $5 }' <<<"$line")")"
+        echo "cron line:    $line"
+    done
+    if [ -f "$dest" ] && head -n 3 "$dest" | grep -qF "$MARK"; then
+        if cmp -s "$dest" "$(readlink -f "${BASH_SOURCE[0]}")"; then echo "script:       $dest"
+        else echo "script:       $dest (differs from this copy; --install updates it)"
+        fi
+    elif [ -e "$dest" ]; then echo "script:       $dest is not this script"
+    else echo "script:       not at $dest"
+    fi
+    if [ -r "$HOME/.shellfishrc" ]; then echo "integration:  ~/.shellfishrc found"
+    else echo "integration:  no ~/.shellfishrc - install Shell Integration from the ShellFish app"
+    fi
+    if command -v systemctl >/dev/null; then
+        for unit in cron crond; do
+            systemctl cat "$unit.service" >/dev/null 2>&1 || continue
+            echo "cron service: $unit $(systemctl is-enabled "$unit" 2>/dev/null || true), $(systemctl is-active "$unit" 2>/dev/null || true)"
+            break
+        done
+    fi
+    [ "${#live[@]}" -gt 0 ] || return 3
+}
+
 do_uninstall() {
     local crontab others dest
     crontab=$(read_crontab)
@@ -329,8 +382,8 @@ main() {
                 }
                 shift
                 ;;
-            --install|--uninstall|--disable)
-                [ -z "$action" ] || { echo "use one of --install, --uninstall, --disable" >&2; return 2; }
+            --install|--uninstall|--disable|--status)
+                [ -z "$action" ] || { echo "use one of --install, --uninstall, --disable, --status" >&2; return 2; }
                 action=${1#--}
                 ;;
             --help|-h) usage; return 0 ;;
@@ -358,7 +411,7 @@ main() {
             do_install "$mode" "$when" "${options[@]}"
             return
             ;;
-        uninstall|disable)
+        uninstall|disable|status)
             [ "$given" = 0 ] || { echo "--$action takes no other arguments" >&2; return 2; }
             "do_$action"
             return

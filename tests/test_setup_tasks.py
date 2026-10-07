@@ -989,6 +989,14 @@ def widget_env(tmp_path):
         "curl": "",
         "id": "echo 1000",
         "hostname": "echo box1",
+        "sudo": '"$@"',
+        "systemctl": f"""
+echo "$*" >>{tmp_path}/systemctl.log
+case "$1" in
+  cat) exit 0 ;;
+  is-enabled|is-active) [ -f {tmp_path}/cron-on ] ;;
+  enable) touch {tmp_path}/cron-on ;;
+esac""",
         "crontab": f"""
 tab={tmp_path}/crontab
 case "$1" in
@@ -1026,6 +1034,9 @@ def test_shellfish_widget_install_disable_enable_uninstall(tmp_path):
     assert tab.read_text().splitlines() == ["0 3 * * * backup", live]
     assert (home / "sent").read_text().startswith("--target box1 server.rack --text box1 ")
     assert " 50% " in (home / "sent").read_text()
+    # cron has to start at boot for the line to keep running.
+    assert "enable --now cron" in (tmp_path / "systemctl.log").read_text()
+    assert "enabled the cron service" in result.stdout
 
     assert widget(env, "--disable").returncode == 0
     assert tab.read_text().splitlines() == ["0 3 * * * backup", "#shellfish-disabled# " + live]
@@ -1034,6 +1045,21 @@ def test_shellfish_widget_install_disable_enable_uninstall(tmp_path):
     # --install with no arguments enables the line and keeps its arguments.
     assert widget(env, "--install").returncode == 0
     assert tab.read_text().splitlines() == ["0 3 * * * backup", live]
+
+    # --minutes alone changes only the schedule.
+    assert widget(env, "--install", "--minutes", "5").returncode == 0
+    assert tab.read_text().splitlines() == ["0 3 * * * backup", "*/5" + live.removeprefix("*/15")]
+    assert widget(env, "--install", "--minutes", "120").returncode == 0
+    assert tab.read_text().splitlines() == [
+        "0 3 * * * backup",
+        "0 */2 * * *" + live.removeprefix("*/15 * * * *"),
+    ]
+    assert widget(env, "--install", "--minutes", "1440", "/").returncode == 0
+    assert tab.read_text().splitlines() == [
+        "0 3 * * * backup",
+        f"0 0 * * * {installed} --target box1 / >/dev/null 2>&1",
+    ]
+    assert (tmp_path / "systemctl.log").read_text().count("enable --now") == 1
 
     # New arguments replace the line; --target '' is the shared widget.
     assert widget(env, "--install", "--target", "").returncode == 0
@@ -1061,6 +1087,11 @@ def test_shellfish_widget_install_default_target_and_checks(tmp_path):
     assert widget(env, "--disable", "/").returncode == 2
     assert widget(env, "--install", "--uninstall").returncode == 2
     assert widget(env, "--install", "--print").returncode == 2
+    for minutes in ("0", "7", "45", "90", "2880", "x", ""):
+        result = widget(env, "--install", "--minutes", minutes)
+        assert result.returncode == 2 and "--minutes takes" in result.stderr
+    assert widget(env, "--minutes", "5").returncode == 2
+    assert widget(env, "--disable", "--minutes", "5").returncode == 2
     assert "no cron line" in widget(env, "--disable").stdout
 
     installed.unlink()
@@ -1074,6 +1105,25 @@ def test_shellfish_widget_install_default_target_and_checks(tmp_path):
 def test_shellfish_widget_help_lists_the_cron_options(tmp_path):
     result = widget(widget_env(tmp_path), "--help")
     assert result.returncode == 0
-    for option in ("--install", "--disable", "--uninstall", "--print", "--help"):
+    for option in ("--install", "--minutes", "--disable", "--uninstall", "--print", "--help"):
         assert option in result.stdout
     assert "set -euo" not in result.stdout
+
+
+def test_shellfish_enables_cron_so_the_widget_survives_a_reboot(tmp_path):
+    ctx, written = shellfish_fixture(tmp_path)
+    (ctx.home / ".shellfishrc").write_text("")
+    ctx.outputs[("have", "systemctl")] = True
+    for check in ("is-enabled", "is-active"):
+        ctx.outputs[("systemctl", check, "--quiet", "cron")] = (1, "")
+    ctx.outputs[("systemctl", "enable", "--now", "cron")] = (0, "")
+    task = Task("shellfish", "")
+    shellfish.install(shellfish.target(ctx), shellfish.bundled())
+    ctx.outputs[("crontab", "-l")] = (0, shellfish.cron_line(shellfish.target(ctx)) + "\n")
+    result = shellfish.probe(ctx, task)
+    assert result.outcome == "pending" and "cron service" in result.reason
+    assert shellfish.apply(ctx, task).outcome == "changed"
+    assert (("systemctl", "enable", "--now", "cron"), {"privileged": True}) in ctx.calls
+    for check in ("is-enabled", "is-active"):
+        ctx.outputs[("systemctl", check, "--quiet", "cron")] = (0, "")
+    assert shellfish.probe(ctx, task).outcome == "satisfied"

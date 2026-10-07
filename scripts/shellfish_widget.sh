@@ -11,13 +11,18 @@
 #   scripts/shellfish_widget.sh --print          # show the arguments, send nothing
 #   scripts/shellfish_widget.sh --help           # this text
 #
-# Cron runs it every 15 minutes. Manage that cron line with:
+# Cron runs it every 15 minutes by default. Manage that cron line with:
 #
 #   --install [options] [mounts]  copy the script to ~/.local/bin (root:
 #       /usr/local/bin), add the cron line and send once. It also re-enables a
 #       disabled widget, keeping its arguments unless new ones are given. The
 #       line sends to the widget named after the short hostname unless
 #       --target says otherwise (--target '' for the one shared widget).
+#       It also enables and starts the cron service (sudo when not root), so
+#       the widget keeps updating after a reboot.
+#   --minutes N  with --install: minutes between runs, 15 by default. N divides
+#       an hour (1-30) or is whole hours that divide a day (60, 120 ... 1440).
+#       Alone with --install it changes only the schedule of the existing line.
 #   --disable    comment the cron line out. setup-machine leaves it that way
 #       until --install enables it again.
 #   --uninstall  remove the cron line and the installed copy. setup-machine
@@ -144,20 +149,60 @@ write_crontab() {
     fi
 }
 
+# The cron schedule for a run every $1 minutes; empty when cron can't keep
+# the gaps even.
+schedule() {
+    local n=$1
+    case "$n" in ''|*[!0-9]*|0*) return 0 ;; esac
+    if [ "$n" -lt 60 ]; then
+        [ $((60 % n)) = 0 ] || return 0
+        if [ "$n" = 1 ]; then echo "* * * * *"; else echo "*/$n * * * *"; fi
+    elif [ $((n % 60)) = 0 ] && [ $((1440 % n)) = 0 ]; then
+        n=$((n / 60))
+        case "$n" in
+            1) echo "0 * * * *" ;;
+            24) echo "0 0 * * *" ;;
+            *) echo "0 */$n * * *" ;;
+        esac
+    fi
+}
+
 # Cron reads % as a newline, so escape it in the arguments.
+# $1 is the schedule, $2 the script, the rest its arguments.
 cron_line() {
-    local path=$1 word line
-    shift
-    line="*/15 * * * * $(printf '%q' "$path")"
+    local path=$2 word line
+    line="$1 $(printf '%q' "$path")"
+    shift 2
     for word in "$@"; do line+=" $(printf '%q' "$word")"; done
     printf '%s >/dev/null 2>&1\n' "${line//%/\\%}"
 }
 
+# The cron service runs the widget line, so it has to start at boot.
+enable_cron() {
+    local unit sudo=()
+    command -v systemctl >/dev/null || {
+        echo "no systemd here; make sure cron starts at boot" >&2
+        return 0
+    }
+    for unit in cron crond; do
+        systemctl cat "$unit.service" >/dev/null 2>&1 || continue
+        if systemctl is-enabled --quiet "$unit" && systemctl is-active --quiet "$unit"; then
+            return 0
+        fi
+        [ "$(id -u)" = 0 ] || sudo=(sudo)
+        "${sudo[@]}" systemctl enable --now "$unit"
+        echo "enabled the $unit service, so the widget keeps updating after a reboot"
+        return 0
+    done
+    echo "no cron service found; make sure cron starts at boot" >&2
+}
+
 # $1 is "replace" to write a new line from the other arguments, or "keep" to
-# re-enable the widget lines already in the crontab.
+# re-enable the widget lines already in the crontab. $2 is the schedule; empty
+# keeps an existing line's.
 do_install() {
-    local mode=$1 self dest tmp crontab line lines=() new=() tool
-    shift
+    local mode=$1 when=$2 self dest tmp crontab line lines=() new=() tool
+    shift 2
     # Check everything before changing anything.
     if [ ! -r "$HOME/.shellfishrc" ]; then
         echo "no ~/.shellfishrc - install Shell Integration from the ShellFish app first" >&2
@@ -191,19 +236,23 @@ do_install() {
         is_widget_line "$line" && lines+=("$line")
     done <<<"$crontab"
     if [ "$mode" = replace ] || [ "${#lines[@]}" -eq 0 ]; then
-        new=("$(cron_line "$dest" "$@")")
+        new=("$(cron_line "${when:-*/15 * * * *}" "$dest" "$@")")
     else
         # Enable: uncomment the existing lines and point them at the installed copy.
         for line in "${lines[@]}"; do
             line=${line#"$DISABLED"}
             new+=("$(printf '%s\n' "$line" |
                 sed -E "s#[^[:space:]]*shellfish_widget\.sh([[:space:]]|\$)#$(printf '%q' "$dest")\\1#")")
+            if [ -n "$when" ]; then
+                new[-1]=$(awk -v when="$when" '{ for (i = 1; i <= 5; i++) $i = ""; sub(/^ +/, ""); print when, $0 }' <<<"${new[-1]}")
+            fi
         done
     fi
     crontab=$(other_lines "$crontab")
     [ -z "$crontab" ] || crontab+=$'\n'
     crontab+=$(printf '%s\n' "${new[@]}")
     write_crontab "$crontab"
+    enable_cron
     printf 'installed %s; crontab:\n' "$dest"
     printf '  %s\n' "${new[@]}"
     # Send once now: the first line's command without its schedule and redirect.
@@ -249,7 +298,7 @@ do_uninstall() {
 
 main() {
     local print=0 mounts=() mount label temp name target="" action="" options=()
-    local target_set=0 given=0
+    local target_set=0 given=0 minutes="" when=""
     name=$(hostname -s 2>/dev/null || hostname)
     while [ $# -gt 0 ]; do
         case "$1" in
@@ -270,6 +319,16 @@ main() {
                 options+=("$1" "$2")
                 shift
                 ;;
+            --minutes)
+                [ $# -ge 2 ] || { echo "--minutes needs a number" >&2; return 2; }
+                minutes=$2
+                when=$(schedule "$2")
+                [ -n "$when" ] || {
+                    echo "--minutes takes a number that divides an hour (1-30) or whole hours that divide a day (60-1440)" >&2
+                    return 2
+                }
+                shift
+                ;;
             --install|--uninstall|--disable)
                 [ -z "$action" ] || { echo "use one of --install, --uninstall, --disable" >&2; return 2; }
                 action=${1#--}
@@ -280,6 +339,10 @@ main() {
         esac
         shift
     done
+    if [ -n "$minutes" ] && [ "$action" != install ]; then
+        echo "--minutes goes with --install" >&2
+        return 2
+    fi
     if [ -n "$action" ] && [ "$print" = 1 ]; then
         echo "--print does not go with --$action" >&2
         return 2
@@ -292,7 +355,7 @@ main() {
             if [ "$target_set" = 0 ]; then
                 options=(--target "$(hostname -s 2>/dev/null || hostname)" "${options[@]}")
             fi
-            do_install "$mode" "${options[@]}"
+            do_install "$mode" "$when" "${options[@]}"
             return
             ;;
         uninstall|disable)

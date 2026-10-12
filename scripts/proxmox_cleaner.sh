@@ -99,9 +99,13 @@ has_source() {
         END { exit !found }'
 }
 
+component_of() {
+    [[ "$1" == */pve ]] && echo pve-no-subscription || echo no-subscription
+}
+
 main() {
     local version suite file name backup records work uri component ceph index
-    local -a files=() repositories=(http://download.proxmox.com/debian/pve)
+    local -a files=() missing=() repositories=(http://download.proxmox.com/debian/pve)
     if [[ "$(id -u)" != 0 ]]; then
         echo "Run this script as root." >&2
         return 1
@@ -126,8 +130,28 @@ main() {
     done
     records="$(for file in ${files[@]+"${files[@]}"}; do source_file read "$file"; done)"
 
+    # Keep updates available for the configured Ceph release. Disabled historical
+    # Ceph stanzas are deliberately left alone; no Ceph release upgrade is done.
+    while IFS= read -r ceph; do
+        [[ -n "$ceph" ]] && repositories+=("http://download.proxmox.com/debian/ceph-$ceph")
+    done < <(awk -F'|' '$4 && $5 {
+        split($1, uris, " ")
+        for (i in uris) if (uris[i] ~ /\/ceph-[a-z]+\/?$/) {
+            sub(/.*ceph-/, "", uris[i]); sub(/\/$/, "", uris[i]); print uris[i]
+        }
+    }' <<<"$records" | sort -u)
+    for uri in "${repositories[@]}"; do
+        if has_source "$uri" "$(component_of "$uri")" <<<"$records"; then
+            echo "Existing active $(component_of "$uri") repository: $uri"
+        else
+            missing+=("$uri")
+        fi
+    done
+
     # Prevent silently mixing release suites or introducing Signed-By conflicts.
-    awk -F'|' -v key="$KEY" '
+    # APT accepts an entry without Signed-By beside one with it, but rejects two
+    # different keys for one URI, so only repositories added below can conflict.
+    awk -F'|' -v key="$KEY" -v adding=" ${missing[*]:-} " '
         $4 {
             split($1, uris, " "); split($2, suites, " ")
             for (i in uris) {
@@ -142,24 +166,14 @@ main() {
                     print "Wrong-suite public repository in " $8 "; review manually." > "/dev/stderr"
                     bad = 1
                 }
-                if ($6 != key) {
-                    print "Conflicting or missing Signed-By in " $8 "; review manually." > "/dev/stderr"
+                u = uris[i]; sub(/\/$/, "", u); sub(/^https:/, "http:", u)
+                if ($6 != "" && $6 != key && index(adding, " " u " ")) {
+                    print "Conflicting Signed-By in " $8 "; review manually." > "/dev/stderr"
                     bad = 1
                 }
             }
         }
         END { exit bad }' <<<"$records"
-
-    # Keep updates available for the configured Ceph release. Disabled historical
-    # Ceph stanzas are deliberately left alone; no Ceph release upgrade is done.
-    while IFS= read -r ceph; do
-        [[ -n "$ceph" ]] && repositories+=("http://download.proxmox.com/debian/ceph-$ceph")
-    done < <(awk -F'|' '$4 && $5 {
-        split($1, uris, " ")
-        for (i in uris) if (uris[i] ~ /\/ceph-[a-z]+\/?$/) {
-            sub(/.*ceph-/, "", uris[i]); sub(/\/$/, "", uris[i]); print uris[i]
-        }
-    }' <<<"$records" | sort -u)
 
     mkdir -p "$P/root"
     backup="$(mktemp -d "$P/root/apt-repos-backup-$(date +%Y%m%d-%H%M%S)-XXXXXX")"
@@ -191,16 +205,11 @@ main() {
         index=$((index + 1))
     done
     mkdir -p "$DIR"
-    for uri in "${repositories[@]}"; do
-        component=no-subscription
-        [[ "$uri" != */pve ]] || component=pve-no-subscription
-        if has_source "$uri" "$component" <<<"$records"; then
-            echo "Existing active $component repository: $uri"
-            continue
-        fi
+    for uri in ${missing[@]+"${missing[@]}"}; do
+        component="$(component_of "$uri")"
         # Append separated stanzas; never overwrite an administrator source.
         file="$DIR/proxmox.sources"
-        [[ ! -s "$file" ]] || printf '\n\n' >>"$file"
+        [[ ! -s "$file" ]] || { [[ -z "$(tail -c1 "$file")" ]] || echo >>"$file"; echo >>"$file"; }
         cat >>"$file" <<EOF
 Types: deb
 URIs: $uri

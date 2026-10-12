@@ -237,8 +237,7 @@ def test_host_prerequisites_refused(host, condition):
     "text",
     [
         stanza(suite="bookworm"),
-        stanza().replace(f"Signed-By: {KEY}\n", ""),
-        stanza().replace(KEY, "/custom/key.gpg"),
+        stanza(component="pve-test").replace(KEY, "/custom/key.gpg"),
     ],
 )
 def test_stale_or_conflicting_public_sources_refused_unchanged(host, text):
@@ -248,6 +247,19 @@ def test_stale_or_conflicting_public_sources_refused_unchanged(host, text):
     assert run(host).returncode != 0
     assert snapshot(host) == before
     assert not (host[0] / "calls").exists()
+
+
+@pytest.mark.parametrize("options", ["", "[signed-by=/custom/key.gpg] "])
+def test_upgraded_host_legacy_public_source_is_accepted(host, options):
+    """A PVE 8 style no-subscription line (own key or none) is valid; nothing to add."""
+    legacy = f"deb {options}{PUBLIC} trixie pve-no-subscription\n"
+    (host[1] / "pve-no-subscription.list").write_text(legacy)
+    (host[1] / "pve-enterprise.sources").write_text(stanza(ENTERPRISE, component="pve-enterprise"))
+    assert run(host).returncode == 0
+    assert entries((host[1] / "pve-enterprise.sources").read_text())[0]["enabled"] == "no"
+    assert (host[1] / "pve-no-subscription.list").read_text() == legacy
+    assert not (host[1] / "proxmox.sources").exists()
+    assert_apt_parses(host)
 
 
 def test_mixed_uri_refusal_is_preflighted_before_any_rewrites(host):

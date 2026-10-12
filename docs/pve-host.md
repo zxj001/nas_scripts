@@ -66,8 +66,9 @@ Ceph release when an active Ceph enterprise source was present. Existing files
 are preserved, and reruns do not add duplicate entries.
 
 The standalone cleaner refuses unsupported hosts, unusable signing keys,
-wrong-suite public sources, missing or conflicting public `Signed-By` settings,
-and stanzas combining enterprise and unrelated URIs before editing any sources.
+wrong-suite public sources, a repository it would add that already exists under a
+different `Signed-By` key, and stanzas combining enterprise and unrelated URIs,
+all before editing any sources. Existing public sources are left as they are.
 Resolve those entries manually and rerun. It runs `apt-get update` with download
 errors treated as failures, and installs no upgrades. If the refresh fails,
 the backup remains available and the script exits with a failure.

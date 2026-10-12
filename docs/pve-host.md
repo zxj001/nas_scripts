@@ -55,6 +55,23 @@ pveversion
 
 ## Package repositories
 
+For repository repair alone on **PVE 9 / trixie**, run
+`bash scripts/proxmox_cleaner.sh` as root from a checkout, or download that script
+and run it with Bash. It backs up `/etc/apt/sources.list` (if present) and
+`/etc/apt/sources.list.d` into a unique `/root/apt-repos-backup-*` directory.
+It disables PVE/Ceph enterprise entries in all APT-loaded `.list` and `.sources`
+files, including `sources.list`, preserving unrelated entries. It appends missing
+active binary no-subscription sources to `proxmox.sources`, including the same
+Ceph release when an active Ceph enterprise source was present. Existing files
+are preserved, and reruns do not add duplicate entries.
+
+The standalone cleaner refuses unsupported hosts, unusable signing keys,
+wrong-suite public sources, missing or conflicting public `Signed-By` settings,
+and stanzas combining enterprise and unrelated URIs before editing any sources.
+Resolve those entries manually and rerun. It runs `apt-get update` with download
+errors treated as failures, and installs no upgrades. If the refresh fails,
+the backup remains available and the script exits with a failure.
+
 A fresh install enables the enterprise repositories (`pve-enterprise`, and the Ceph
 `enterprise` one), which need a subscription. Without one every `apt update` fails:
 

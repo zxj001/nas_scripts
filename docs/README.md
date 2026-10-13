@@ -75,6 +75,7 @@ Integration from the iPhone app first, then run `--only shellfish`. See
 | 8 | ShellFish widget: CPU, temp, memory, disk on the iPhone | [08-shellfish-widgets.md](08-shellfish-widgets.md) |
 | - | Optional: pass the GT 1030 through to the VM **(VM)** | [gpu-passthrough.md](gpu-passthrough.md) |
 | - | R9 Nano (Fiji) passthrough: patched amdgpu for the SMU init Oops **(VM)** | [fiji-amdgpu.md](fiji-amdgpu.md) |
+| - | llama.cpp on the GPU with Vulkan, models, GPU vs CPU benchmark **(VM)** | [llama.md](llama.md) |
 | - | SSH and Tailscale on the Proxmox host itself **(host)** | [pve-host.md](pve-host.md) |
 
 When you're done, add the machine to [Local Machines](../README.md#local-machines).

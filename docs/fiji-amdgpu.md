@@ -67,6 +67,7 @@ Use the `-b` index whose boot shows the Oops (`journalctl --list-boots`).
 - [x] MOK key enrolled, patched module installed, VM rebooted (Secure Boot still on)
 - [x] SMU starts: DPM clocks 300–1000 MHz, temperature sensor and 4 GiB VRAM in sysfs; `/dev/dri/renderD128`
   exists; `vulkaninfo` shows `AMD Radeon R9 Fury Series (RADV FIJI)`
-- [ ] llama.cpp Vulkan vs CPU benchmark
+- [x] llama.cpp Vulkan vs CPU benchmark: GPU 6–9× faster at generation and 12–21× at prompt
+  processing ([llama.md](llama.md#results-on-myllama), `scripts/llama_setup.sh`)
 - [ ] dkms package and `setup_tasks/fiji.py`, so the fix survives kernel upgrades
 - [ ] Patch sent upstream (amd-gfx), with `Fixes:` and the Oops log

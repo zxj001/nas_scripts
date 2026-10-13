@@ -41,5 +41,6 @@ Units are tokens per second.
 | Qwen3-4B Q4_K_M | prompt, 512 tokens (pp512) | 441 | 36.4 | 12× |
 | Qwen3-4B Q4_K_M | generation, 128 tokens (tg128) | 51.9 | 8.1 | 6.4× |
 
-A greedy GPU generation (`check`) produced correct, coherent text, so the Vulkan shaders compute
-correctly on GCN3 and aren't just fast.
+The full `llama-bench` output is in [llama-results/](llama-results/). A greedy GPU generation
+(`check`) produced correct, coherent text, so the Vulkan shaders compute correctly on GCN3 and
+aren't just fast.

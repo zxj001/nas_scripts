@@ -5,10 +5,13 @@
 # works with any GPU Mesa's Vulkan drivers support. No root needed.
 #
 #   scripts/llama_setup.sh install            # llama.cpp Vulkan and CPU builds
-#   scripts/llama_setup.sh models             # the default Qwen3 GGUFs
+#   scripts/llama_setup.sh models             # the default Qwen3 / Qwen3.5 GGUFs
 #   scripts/llama_setup.sh model REPO FILE    # any GGUF on Hugging Face
 #   scripts/llama_setup.sh check [MODEL]      # devices, plus a short GPU generation
 #   scripts/llama_setup.sh bench [MODEL...]   # llama-bench, GPU vs CPU, saved to results/
+#   scripts/llama_setup.sh bench --depth 8192,16384 [--kv q8_0] [MODEL...]
+#                                             # GPU only, with that much context already
+#                                             # filled (and that KV cache type)
 #   scripts/llama_setup.sh status             # what is installed
 #   scripts/llama_setup.sh --help             # this text
 #
@@ -23,16 +26,22 @@
 # models and model check each file against the SHA-256 Hugging Face lists for it.
 # MODEL is a path or a file name in models/; bench and check default to every
 # GGUF there (check: the smallest).
+#
+# bench also prints the GPU's peak VRAM and GTT use (amdgpu). GTT above the
+# ~550 MiB idle level means the model plus context spilled out of VRAM into
+# system RAM, and generation gets several times slower.
 set -euo pipefail
 
 LLAMA_HOME="${LLAMA_HOME:-$HOME/llama}"
 # llama.cpp release tested on the R9 Nano (RADV FIJI); bump after testing.
 BUILD_DEFAULT=b11577
 RELEASES=https://github.com/ggml-org/llama.cpp/releases/download
-# Qwen3 GGUFs that fit a 4 GiB card with room for the context.
+# GGUFs that fit a 4 GiB card with room for the context. Qwen3.5-4B keeps far
+# less KV cache per token than Qwen3-4B, so it stays fast at long contexts.
 DEFAULT_MODELS=(
     "Qwen/Qwen3-1.7B-GGUF Qwen3-1.7B-Q8_0.gguf"
     "Qwen/Qwen3-4B-GGUF Qwen3-4B-Q4_K_M.gguf"
+    "unsloth/Qwen3.5-4B-GGUF Qwen3.5-4B-Q4_K_M.gguf"
 )
 
 usage() {
@@ -134,28 +143,63 @@ cmd_check() {
     echo
 }
 
+# Run "$@" and print the peak VRAM and GTT use of the first amdgpu device.
+with_peak_memory() {
+    local dev pid v g mv=0 mg=0
+    for dev in /sys/bus/pci/devices/*; do
+        [[ -r "$dev/mem_info_vram_used" ]] && break
+    done
+    [[ -r "$dev/mem_info_vram_used" ]] || { "$@"; return; }
+    "$@" &
+    pid=$!
+    while kill -0 "$pid" 2>/dev/null; do
+        read -r v <"$dev/mem_info_vram_used"
+        read -r g <"$dev/mem_info_gtt_used"
+        ((v > mv)) && mv=$v
+        ((g > mg)) && mg=$g
+        sleep 0.2
+    done
+    wait "$pid"
+    echo
+    echo "Peak GPU memory: VRAM $((mv >> 20)) MiB, GTT $((mg >> 20)) MiB"
+}
+
 cmd_bench() {
-    local dir build model out
+    local dir build model out depth="" kv="" tag
+    while [[ "${1:-}" == --* ]]; do
+        case "$1" in
+            --depth) depth="${2:?--depth needs N[,N...]}"; shift 2 ;;
+            --kv) kv="${2:?--kv needs a cache type like q8_0}"; shift 2 ;;
+            *) die "unknown bench option $1" ;;
+        esac
+    done
     dir="$(current)"
     build="$(basename "$dir")"
     mapfile -t models < <(models_or_all "$@")
     ((${#models[@]})) || die "no models; run $0 models"
+    local gpu_args=(-ngl 99 -p 512 -n 128 -r 3 -o md)
+    [[ -z "$depth" ]] || gpu_args+=(-d "$depth")
+    [[ -z "$kv" ]] || gpu_args+=(-fa 1 -ctk "$kv" -ctv "$kv")
+    tag="${depth:+-d${depth//,/-}}${kv:+-kv$kv}"
+    gpu_bench() { (cd "$dir/vulkan" && ./llama-bench -m "$model" "${gpu_args[@]}" 2>/dev/null); }
     mkdir -p "$LLAMA_HOME/results"
     for model in "${models[@]}"; do
-        out="$LLAMA_HOME/results/$(date +%F)-$(hostname -s)-$build-$(basename "$model" .gguf).md"
+        out="$LLAMA_HOME/results/$(date +%F)-$(hostname -s)-$build-$(basename "$model" .gguf)$tag.md"
         {
             echo "# $(basename "$model") on $(hostname -s), llama.cpp $build, $(date '+%F %R')"
             echo
             echo "CPU: $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2- | sed 's/^ //'), $(nproc) threads"
             (cd "$dir/vulkan" && ./llama-bench --list-devices 2>/dev/null | grep -E '^ +Vulkan')
             echo
-            echo "## GPU (Vulkan, all layers offloaded)"
+            echo "## GPU (Vulkan, all layers offloaded${depth:+, context depth $depth}${kv:+, KV cache $kv})"
             echo
-            (cd "$dir/vulkan" && ./llama-bench -m "$model" -ngl 99 -p 512 -n 128 -r 3 -o md 2>/dev/null)
-            echo
-            echo "## CPU only"
-            echo
-            (cd "$dir/cpu" && ./llama-bench -m "$model" -t "$(nproc)" -p 512 -n 128 -r 3 -o md 2>/dev/null)
+            with_peak_memory gpu_bench
+            if [[ -z "$depth$kv" ]]; then
+                echo
+                echo "## CPU only"
+                echo
+                (cd "$dir/cpu" && ./llama-bench -m "$model" -t "$(nproc)" -p 512 -n 128 -r 3 -o md 2>/dev/null)
+            fi
         } | tee "$out"
         say "Saved $out"
     done

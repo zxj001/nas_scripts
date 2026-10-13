@@ -31,9 +31,12 @@ it is missing, because the module's BTF needs it.
 The VM boots with Secure Boot on, so the module must be signed by an enrolled key. `install`
 strips the 600 MB of debug info (as Debian does for its own modules) and then signs it with
 `/var/lib/dkms/mok.key`, creating the key if it is missing, which lets a later dkms package
-reuse the same key. The first time, `install` runs `mokutil --import` and asks for
-a one-time password. Reboot, open the VM console in Proxmox (noVNC), and in the blue MOK Manager
-choose **Enroll MOK → Continue → Yes**, then enter the password.
+reuse the same key. The first time, `install` runs `mokutil --import` and asks for a one-time
+password. Open the VM console (Proxmox web UI → VM 100 → Console) **before** you reboot: MOK
+Manager is a blue screen that appears before GRUB and waits only about 10 seconds. Press a key,
+choose **Enroll MOK → Continue → Yes**, enter the password, then choose **Reboot**. If you miss
+it, shim boots on and drops the request, and the kernel rejects the patched module (the GPU is
+left with no driver). Run `sudo mokutil --import /var/lib/dkms/mok.pub` and reboot again.
 
 After reboot, check the result:
 

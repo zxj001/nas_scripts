@@ -128,6 +128,12 @@ key_enrolled() {
     mokutil --test-key "$MOK_PUB" 2>/dev/null | grep -q 'already enrolled'
 }
 
+# Whether the key is in mokutil's list ($1: --list-enrolled or --list-new),
+# by subject, so no root is needed to read /var/lib/dkms.
+mok_listed() {
+    mokutil "$1" 2>/dev/null | grep -q 'CN=DKMS module signing key'
+}
+
 secure_boot() {
     mokutil --sb-state 2>/dev/null | grep -q 'SecureBoot enabled'
 }
@@ -157,7 +163,9 @@ cmd_install() {
         say "Secure Boot is on and the key is not enrolled yet"
         echo "Choose a one-time password; you type it again in MOK Manager after reboot."
         mokutil --import "$MOK_PUB"
-        echo "Reboot, then on the VM console choose Enroll MOK -> Continue -> Yes and the password."
+        echo "Open the VM console (Proxmox: VM -> Console) first, then reboot. MOK Manager"
+        echo "shows for only ~10 s before GRUB: press a key, Enroll MOK -> Continue -> Yes,"
+        echo "type the password, Reboot. Missed it? Run mokutil --import again."
     else
         echo "Reboot to load the patched module, then run: $0 status"
     fi
@@ -178,10 +186,12 @@ cmd_status() {
     echo "kernel:       $KVER"
     echo "amdgpu file:  $mod${signer:+ (signed by $signer)}"
     echo "Secure Boot:  $(secure_boot && echo enabled || echo disabled)"
-    if [[ -f "$MOK_PUB" ]]; then
-        echo "MOK key:      $MOK_PUB $(key_enrolled && echo enrolled || echo 'NOT enrolled')"
+    if mok_listed --list-enrolled; then
+        echo "MOK key:      enrolled"
+    elif mok_listed --list-new; then
+        echo "MOK key:      queued; reboot with the VM console open and enroll it in MOK Manager"
     else
-        echo "MOK key:      none ($MOK_PUB)"
+        echo "MOK key:      NOT enrolled; sudo mokutil --import $MOK_PUB, then reboot with the VM console open"
     fi
     echo "built module: $([[ -f "$MODULE" ]] && echo "$MODULE" || echo none)"
     for gpu in /sys/bus/pci/devices/*; do

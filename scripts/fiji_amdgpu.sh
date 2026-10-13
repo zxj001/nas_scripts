@@ -105,8 +105,18 @@ cmd_build() {
         printf '\n# out-of-tree build (fiji_amdgpu.sh)\nCFLAGS_amdgpu_trace_points.o += -I$(src)/../../..\n' \
             >>"$AMDGPU/Makefile"
 
+    # The module's BTF is made by pahole (package pahole), unpacked here if missing.
+    local pahole=()
+    if ! command -v pahole >/dev/null; then
+        if [[ ! -x "$WORK/tools/usr/bin/pahole" ]]; then
+            (cd "$WORK/debs" && apt-get download -q pahole)
+            dpkg -x "$(compgen -G "$WORK/debs/pahole_*.deb" | head -1)" "$WORK/tools"
+        fi
+        pahole=(PAHOLE="$WORK/tools/usr/bin/pahole")
+    fi
+
     say "Compiling amdgpu.ko (log: $WORK/build.log)"
-    if ! make -C "$HEADERS" M="$AMDGPU" -j"$(nproc)" modules >"$WORK/build.log" 2>&1; then
+    if ! make -C "$HEADERS" M="$AMDGPU" "${pahole[@]}" -j"$(nproc)" modules >"$WORK/build.log" 2>&1; then
         tail -20 "$WORK/build.log" >&2
         die "build failed, see $WORK/build.log"
     fi
@@ -135,6 +145,8 @@ cmd_install() {
     local dest="/lib/modules/$KVER/updates/amdgpu.ko"
     say "Signing and installing $dest"
     install -D -m 644 "$MODULE" "$dest"
+    # 600 MB of DWARF otherwise, in the initramfs too; strip before signing.
+    strip --strip-debug "$dest"
     "$SIGN_FILE" sha256 "$MOK_KEY" "$MOK_PUB" "$dest"
     depmod -a "$KVER"
     [[ "$(modinfo -k "$KVER" -n amdgpu)" == "$dest" ]] || die "depmod does not pick $dest"

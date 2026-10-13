@@ -25,11 +25,13 @@ sudo scripts/fiji_amdgpu.sh install   # sign, install to updates/, initramfs
 
 `build` fetches the `linux-source` and `linux-headers` packages for the running kernel's exact
 version with `apt-get download`, so no packages are installed. It patches `drivers/gpu/drm/amd`
-and compiles only `amdgpu.ko`, all under `~/fiji-amdgpu`.
+and compiles only `amdgpu.ko`, all under `~/fiji-amdgpu`. It also unpacks `pahole` there when
+it is missing, because the module's BTF needs it.
 
 The VM boots with Secure Boot on, so the module must be signed by an enrolled key. `install`
-signs it with `/var/lib/dkms/mok.key`, creating the key if it is missing, which lets a later
-dkms package reuse the same key. The first time, `install` runs `mokutil --import` and asks for
+strips the 600 MB of debug info (as Debian does for its own modules) and then signs it with
+`/var/lib/dkms/mok.key`, creating the key if it is missing, which lets a later dkms package
+reuse the same key. The first time, `install` runs `mokutil --import` and asks for
 a one-time password. Reboot, open the VM console in Proxmox (noVNC), and in the blue MOK Manager
 choose **Enroll MOK → Continue → Yes**, then enter the password.
 
@@ -57,6 +59,7 @@ Use the `-b` index whose boot shows the Oops (`journalctl --list-boots`).
 
 - [x] Root cause confirmed in the 6.12.111 source and mainline
 - [x] Patch against Debian `6.12.111-1`; `build` fetches the source and builds out of tree without root
+- [x] `amdgpu.ko` built: same vermagic and deps as stock, and the disassembly shows `request_firmware` writing to a stack slot instead of `adev->pm.fw`
 - [ ] Full Oops log saved
 - [ ] MOK key enrolled, patched module installed, VM rebooted
 - [ ] `fiji_start_smu` completes, `/dev/dri/renderD128` exists, `vulkaninfo` shows RADV FIJI

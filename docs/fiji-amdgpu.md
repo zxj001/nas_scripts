@@ -63,9 +63,10 @@ Use the `-b` index whose boot shows the Oops (`journalctl --list-boots`).
 - [x] Root cause confirmed in the 6.12.111 source and mainline
 - [x] Patch against Debian `6.12.111-1`; `build` fetches the source and builds out of tree without root
 - [x] `amdgpu.ko` built: same vermagic and deps as stock, and the disassembly shows `request_firmware` writing to a stack slot instead of `adev->pm.fw`
-- [ ] Full Oops log saved
-- [ ] MOK key enrolled, patched module installed, VM rebooted
-- [ ] `fiji_start_smu` completes, `/dev/dri/renderD128` exists, `vulkaninfo` shows RADV FIJI
+- [x] Full Oops log saved (`~/fiji-amdgpu/oops-6.12.111.log`)
+- [x] MOK key enrolled, patched module installed, VM rebooted (Secure Boot still on)
+- [x] SMU starts: DPM clocks 300–1000 MHz, temperature sensor and 4 GiB VRAM in sysfs; `/dev/dri/renderD128`
+  exists; `vulkaninfo` shows `AMD Radeon R9 Fury Series (RADV FIJI)`
 - [ ] llama.cpp Vulkan vs CPU benchmark
 - [ ] dkms package and `setup_tasks/fiji.py`, so the fix survives kernel upgrades
 - [ ] Patch sent upstream (amd-gfx), with `Fixes:` and the Oops log

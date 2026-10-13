@@ -124,18 +124,20 @@ cmd_build() {
     echo "Next: sudo $0 install"
 }
 
+# These match on captured output: with pipefail, `mokutil | grep -q` fails
+# when grep exits at the first match and mokutil dies of SIGPIPE.
 key_enrolled() {
-    mokutil --test-key "$MOK_PUB" 2>/dev/null | grep -q 'already enrolled'
+    [[ "$(mokutil --test-key "$MOK_PUB" 2>/dev/null)" == *'already enrolled'* ]]
 }
 
 # Whether the key is in mokutil's list ($1: --list-enrolled or --list-new),
 # by subject, so no root is needed to read /var/lib/dkms.
 mok_listed() {
-    mokutil "$1" 2>/dev/null | grep -q 'CN=DKMS module signing key'
+    [[ "$(mokutil "$1" 2>/dev/null)" == *'CN=DKMS module signing key'* ]]
 }
 
 secure_boot() {
-    mokutil --sb-state 2>/dev/null | grep -q 'SecureBoot enabled'
+    [[ "$(mokutil --sb-state 2>/dev/null)" == *'SecureBoot enabled'* ]]
 }
 
 cmd_install() {

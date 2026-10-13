@@ -73,10 +73,14 @@ cmd_build() {
         die "linux-image-$KVER is not installed"
     mkdir -p "$WORK/debs" "$WORK/root" "$WORK/src"
 
-    say "Downloading kernel $ver source and headers"
-    (cd "$WORK/debs" && apt-get download -q \
-        "linux-source-$SERIES=$ver" "linux-headers-$KVER=$ver" \
-        "linux-headers-$ABI-common=$ver" "linux-kbuild-$ABI=$ver")
+    local pkg missing=()
+    for pkg in "linux-source-$SERIES" "linux-headers-$KVER" "linux-headers-$ABI-common" "linux-kbuild-$ABI"; do
+        compgen -G "$WORK/debs/${pkg}_${ver}_*.deb" >/dev/null || missing+=("$pkg=$ver")
+    done
+    if ((${#missing[@]})); then
+        say "Downloading kernel $ver source and headers"
+        (cd "$WORK/debs" && apt-get download -q "${missing[@]}")
+    fi
     if [[ ! -f "$HEADERS/Makefile" ]]; then
         for deb in "$WORK"/debs/*_"$ver"_*.deb; do dpkg -x "$deb" "$WORK/root"; done
         # The headers Makefile includes the common tree by absolute /usr/src path.

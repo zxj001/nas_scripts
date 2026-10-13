@@ -28,3 +28,6 @@ Boot off (at boot press ESC into the OVMF menu, then Device Manager → Secure B
 uncheck "Attempt Secure Boot"; or run `sudo mokutil --disable-validation`, reboot and confirm the
 change in the MOK manager), or keep it on and enroll the dkms key with
 `sudo mokutil --import /var/lib/dkms/mok.pub`, then reboot and confirm the enrolment in the MOK manager.
+
+An AMD R9 Nano (Fiji) also binds to amdgpu, but it oopses in SMU init on Debian 13 and needs a
+patched module: [fiji-amdgpu.md](fiji-amdgpu.md).

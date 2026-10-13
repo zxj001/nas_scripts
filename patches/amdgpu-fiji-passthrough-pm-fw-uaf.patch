@@ -1,0 +1,21 @@
+--- a/drivers/gpu/drm/amd/amdgpu/amdgpu_device.c
++++ b/drivers/gpu/drm/amd/amdgpu/amdgpu_device.c
+@@ -1672,14 +1672,15 @@
+ 		if (adev->asic_type == CHIP_FIJI) {
+ 			int err;
+ 			uint32_t fw_ver;
++			const struct firmware *fw;
+ 
+-			err = request_firmware(&adev->pm.fw, "amdgpu/fiji_smc.bin", adev->dev);
++			err = request_firmware(&fw, "amdgpu/fiji_smc.bin", adev->dev);
+ 			/* force vPost if error occured */
+ 			if (err)
+ 				return true;
+ 
+-			fw_ver = *((uint32_t *)adev->pm.fw->data + 69);
+-			release_firmware(adev->pm.fw);
++			fw_ver = *((uint32_t *)fw->data + 69);
++			release_firmware(fw);
+ 			if (fw_ver < 0x00160e00)
+ 				return true;
+ 		}
